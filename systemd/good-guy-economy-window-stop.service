@@ -1,0 +1,7 @@
+[Unit]
+Description=Good-Guy-Economy — stop stack + investigation loop at the end of the nightly active window
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/curl -sS -X POST "http://127.0.0.1:8420/api/stack/stop?force=true"
+ExecStopPost=-/usr/bin/systemctl --user stop good-guy-economy-window-awake.service

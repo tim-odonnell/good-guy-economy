@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Launch the Good-Guy-Economy TUI command center in a terminal.
+# Keeps the window open if it exits with an error, so problems are visible.
+"$HOME/good-guy-economy-tui"
+code=$?
+if [ "$code" -ne 0 ]; then
+  echo
+  echo "[good-guy-economy dashboard exited with code $code — press Enter to close]"
+  read -r
+fi

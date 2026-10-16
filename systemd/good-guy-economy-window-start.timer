@@ -1,0 +1,11 @@
+[Unit]
+Description=Start Good-Guy-Economy's nightly active window at 1am
+
+[Timer]
+OnCalendar=*-*-* 01:00:00
+# Persistent removed 2026-10-16: a missed run must be skipped, not replayed at boot (no night = no report)
+# wake the laptop from suspend for the window (2026-10-10: it slept 00:43-01:27 and the run started late)
+WakeSystem=true
+
+[Install]
+WantedBy=timers.target

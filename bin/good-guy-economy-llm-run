@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+# Wrapper so good-guy-economy-llm.service never needs editing for a model swap or a
+# hardware move — all machine/model-specific values live in model.env.
+set -euo pipefail
+
+MODEL_ENV="$HOME/.config/good-guy-economy/model.env"
+if [ ! -f "$MODEL_ENV" ]; then
+    echo "Missing $MODEL_ENV" >&2
+    exit 1
+fi
+set -a
+source "$MODEL_ENV"
+set +a
+
+# gemma12b-run — hand off to the zero-swap Gemma launcher (mlock'd weights, MTP drafter,
+# mmproj, reasoning), configured by a profile in ~/gemma-4-12b-zero-swap/models/. That profile
+# sets port 8099 and alias good-guy-economy-llm itself, so nothing below applies. Added 2026-10-05.
+if [ "${GOOD_GUY_ECONOMY_BACKEND:-}" = "gemma12b-run" ]; then
+    export GEMMA_ENV_FILE="$GOOD_GUY_ECONOMY_GEMMA_ENV_FILE"
+    exec "$HOME/gemma-4-12b-zero-swap/gemma12b-run"
+fi
+
+export LD_LIBRARY_PATH="$GOOD_GUY_ECONOMY_LLAMA_LIB_DIR"
+
+# GOOD_GUY_ECONOMY_BACKEND selects which flags get passed:
+#   vulkan (default) — GPU offload via llama.cpp's Vulkan backend.
+#   cpu               — a CPU-only build/fork; no GPU flags, no Vulkan ICD pin.
+BACKEND="${GOOD_GUY_ECONOMY_BACKEND:-vulkan}"
+
+args=(
+    -m "$GOOD_GUY_ECONOMY_MODEL_PATH"
+    -c "$GOOD_GUY_ECONOMY_CTX"
+    -fa "${GOOD_GUY_ECONOMY_FLASH_ATTN:-on}"
+    --cache-type-k "${GOOD_GUY_ECONOMY_CACHE_TYPE_K:-q8_0}" --cache-type-v "${GOOD_GUY_ECONOMY_CACHE_TYPE_V:-q8_0}"
+    -t "${GOOD_GUY_ECONOMY_THREADS:-6}" -b 1024 -ub 1024 -np "${GOOD_GUY_ECONOMY_SLOTS:-4}" -kvu
+    --host 127.0.0.1 --port 8099
+    --alias good-guy-economy-llm
+)
+
+# Self-speculative decoding via the model's own built-in MTP head. Qwen3.6's
+# checkpoint has one (no separate -md draft file needed), so this defaults on
+# to match existing behavior. A model with no MTP head (most models,
+# including LFM2.5's lfm2moe arch) doesn't support this flag — set
+# GOOD_GUY_ECONOMY_SPEC_DECODE=off for those.
+if [ "${GOOD_GUY_ECONOMY_SPEC_DECODE:-on}" = "on" ]; then
+    args+=(--spec-type draft-mtp --spec-draft-n-max 2)
+fi
+
+if [ "$BACKEND" = "vulkan" ]; then
+    # Hide the Intel iGPU from Vulkan entirely. It allocates SYSTEM RAM as
+    # VRAM, so any layer landing on it competes with the CPU dispatcher for
+    # the same 15GB — that OOM-killed the dispatcher on 2026-08-23.
+    # Restricting the loader to the AMD driver also pins the device indices:
+    # with only the AMD ICD loaded, Vulkan0 and Vulkan1 are always the two
+    # WX9100s, so enumeration order can never drift again.
+    export VK_DRIVER_FILES="${GOOD_GUY_ECONOMY_VULKAN_ICD:-/usr/share/vulkan/icd.d/radeon_icd.json}"
+    args+=(-dev "$GOOD_GUY_ECONOMY_GPU_DEVICE" -ngl 999)
+fi
+# BACKEND=cpu: no -dev/-ngl — the binary itself (a CPU-only build/fork) never
+# offloads to a GPU, so those flags would be meaningless or unsupported.
+
+# Escape hatch for flags a particular backend/fork needs that aren't covered
+# above (e.g. fork-specific tuning flags).
+if [ -n "${GOOD_GUY_ECONOMY_EXTRA_ARGS:-}" ]; then
+    # shellcheck disable=SC2206
+    args+=(${GOOD_GUY_ECONOMY_EXTRA_ARGS})
+fi
+
+exec "$GOOD_GUY_ECONOMY_LLAMA_SERVER_BIN" "${args[@]}"

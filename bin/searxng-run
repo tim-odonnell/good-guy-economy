@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+cd "$HOME/.local/share/searxng"
+source .venv/bin/activate
+
+export SEARXNG_SETTINGS_PATH="$HOME/.config/searxng/settings.yml"
+
+exec python3 -m searx.webapp

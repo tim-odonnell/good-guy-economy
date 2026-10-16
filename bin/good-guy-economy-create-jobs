@@ -1,0 +1,68 @@
+#!/usr/bin/env python3
+"""Create Good-Guy-Economy's six Hermes cron jobs from hermes/jobs.example.json.
+
+  good-guy-economy-create-jobs            create any job that doesn't exist yet (by name)
+  good-guy-economy-create-jobs --dry-run  only print what it would do
+
+Uses `hermes cron create`, then sets each job's tool list (the CLI has no flag for it): COLLECT gets
+[web], the rest [file]. An empty list would hand the small model all ~34 tools (~11k tokens) every run.
+Run it while the Hermes gateway is stopped (it rewrites jobs.json while it runs).
+"""
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+HOME = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
+HERMES = Path.home() / ".hermes/hermes-agent/venv/bin/hermes"
+SPEC = Path(__file__).resolve().parent.parent / "hermes/jobs.example.json"
+DRY = "--dry-run" in sys.argv
+
+
+def jobs_file():
+    return HOME / "cron/jobs.json"
+
+
+def load():
+    try:
+        j = json.loads(jobs_file().read_text())
+        return j, (j["jobs"] if isinstance(j, dict) else j)
+    except FileNotFoundError:
+        return None, []
+
+
+def main():
+    if subprocess.run(["systemctl", "--user", "is-active", "--quiet", "hermes-gateway.service"]).returncode == 0:
+        sys.exit("Stop the Hermes gateway first: systemctl --user stop hermes-gateway")
+    spec = json.loads(SPEC.read_text())["jobs"]
+    _, existing = load()
+    have = {j.get("name") for j in existing}
+    hermes = str(HERMES) if HERMES.exists() else "hermes"
+    for job in spec:
+        if job["name"] in have:
+            print(f"exists   {job['name']}")
+            continue
+        cmd = [hermes, "cron", "create", "--name", job["name"], "--deliver", job.get("deliver") or "local",
+               "--workdir", os.path.expanduser(job["workdir"])]
+        if job.get("script"):
+            cmd += ["--script", job["script"]]
+        if job.get("no_agent"):
+            cmd += ["--no-agent"]
+        cmd += [job["schedule"]["expr"]] + ([job["prompt"]] if job.get("prompt") else [])
+        print(("would run " if DRY else "create   ") + job["name"])
+        if not DRY:
+            subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL)
+    if DRY:
+        return
+    raw, jobs = load()
+    want = {j["name"]: j.get("enabled_toolsets") for j in spec}
+    for j in jobs:
+        if j.get("name") in want and want[j["name"]] is not None:
+            j["enabled_toolsets"] = want[j["name"]]
+    jobs_file().write_text(json.dumps(raw, indent=2))
+    print("tool lists set: " + ", ".join(f"{n}={t}" for n, t in want.items()))
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,470 @@
+#!/usr/bin/env python3
+"""econ-report — build Good-Guy-Economy's dated morning report on the US economy.
+
+  econ-report            build ~/Economy-Reports/YYYY-MM-DD.html (+ .md, latest.html)
+  econ-report --notify   build if missing, then show a desktop notification
+                         (click "Open report" to open it)
+
+Facts come from the econ-digest data (no model). The model's sections (morning
+note, direction calls, history comparisons) are included when they exist and are
+labelled as the model's analysis, after the script and model fact checks.
+Runs from systemd timers at 04:30, 06:40 (backup) and 07:00 (notify).
+
+No night, no report (2026-10-16): the report is only built when every night job (collect,
+brainstorm, scenario, morning) finished OK today. If COLLECT did not, it writes nothing and logs
+~/Economy-Reports/skipped.log. If COLLECT ran but a later model stage failed, it builds a PARTIAL
+report: the script-computed facts plus a warning, and leaves out the model sections of any stage
+that did not finish today (they would be old analysis). The timers are not Persistent, so booting the laptop in the
+morning never builds one. The next real night covers every day since the last report
+(econ_lib.gap_days) because data/report-state.json remembers the last report built.
+"""
+import html
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+from datetime import date, datetime, time, timedelta
+from pathlib import Path
+
+BASE = Path.home() / ".hermes/investigations/active"
+OUT = Path.home() / "Economy-Reports"
+DIGEST_SCRIPT = Path.home() / ".hermes/scripts/econ-digest.py"
+sys.path.insert(0, str(Path.home() / ".hermes/scripts"))
+import econ_lib  # noqa: E402
+import econ_factcheck  # noqa: E402
+TODAY = date.today()
+
+
+def read(p):
+    try:
+        return Path(p).read_text()
+    except Exception:
+        return ""
+
+
+def load_digest():
+    f = BASE / f"data/digest/{TODAY}.json"
+    # never collect here: if COLLECT did not run tonight there is no report (see ready())
+    try:
+        return json.loads(f.read_text())
+    except Exception:
+        return None
+
+
+def alert_since():
+    """Alerts since the last report (at least the last 24 h)."""
+    since = datetime.now() - timedelta(hours=24)
+    base = econ_lib.baseline_date()
+    if base:
+        since = min(since, datetime.combine(base, time(12, 0)))
+    return since.strftime("%Y-%m-%d %H:%M")
+
+
+MISSING = []  # model stages (brainstorm, scenario, morning) that did not finish OK today -> partial report
+
+
+def ready():
+    """True if COLLECT finished today (real data exists). Fills MISSING with failed later stages.
+    If COLLECT did not finish, log why and let the caller write nothing."""
+    status, err = econ_lib.night_status()
+    if err or not status.get("collect"):
+        OUT.mkdir(exist_ok=True)
+        with open(OUT / "skipped.log", "a") as f:
+            f.write(f"{datetime.now():%Y-%m-%d %H:%M} no report for {TODAY}: the night run did not happen ({err or 'collect did not finish today'})\n")
+        print("No report: the night run did not happen today.")
+        return False
+    MISSING[:] = [n for n in ("brainstorm", "scenario", "morning") if not status.get(n)]
+    return True
+
+
+def fmt(v):
+    return f"{v:,.2f}".rstrip("0").rstrip(".") if abs(v) < 1000 else f"{v:,.0f}"
+
+
+def section(text, heading_re):
+    """Body of the first markdown section whose heading matches, up to the next heading of same/higher level."""
+    m = re.search(rf"^(#+)\s*{heading_re}.*$", text, re.M | re.I)
+    if not m:
+        return ""
+    level = len(m.group(1))
+    rest = text[m.end():]
+    n = re.search(rf"^#{{1,{level}}}\s", rest, re.M)
+    return rest[:n.start() if n else len(rest)].strip()
+
+
+def entries(text, prefix):
+    """Split '### T-1: ...' style entries -> list of (title, body)."""
+    parts = re.split(rf"^###\s*({prefix}-\d+.*)$", text, flags=re.M)
+    return [(parts[i].strip(), parts[i + 1].strip()) for i in range(1, len(parts) - 1, 2)]
+
+
+def field(body, name):
+    m = re.search(rf"^-\s*{name}:\s*(.+)$", body, re.M | re.I)
+    return m.group(1).strip() if m else ""
+
+
+def norm_numbers(text):
+    out = set()
+    for m in re.finditer(r"(?<![\w.])-?\d[\d,]*(?:\.\d+)?", text):
+        s = m.group(0).replace(",", "")
+        try:
+            v = float(s)
+        except ValueError:
+            continue
+        out.update({f"{v:g}", f"{round(v, 1):g}", f"{round(v, 2):g}", f"{abs(v):g}", f"{round(abs(v), 1):g}"})
+    return out
+
+
+def number_check(take, sources_text):
+    """Numbers in the model's note that appear nowhere in tonight's data (years and small counts ignored)."""
+    known = norm_numbers(sources_text)
+    bad = []
+    for m in re.finditer(r"(?<![\w.])-?\$?\d[\d,]*(?:\.\d+)?\s*(%|percent|k|bn|billion|trillion|pt)?", take):
+        raw = m.group(0).strip()
+        s = re.sub(r"[^\d.\-]", "", raw.split()[0].replace(",", "")) if raw else ""
+        try:
+            v = float(s)
+        except ValueError:
+            continue
+        if (1900 <= v <= 2100 and float(v).is_integer()) or (abs(v) <= 31 and float(v).is_integer() and not m.group(1)):
+            continue  # years, days of month, small counts
+        if not ({f"{v:g}", f"{round(v, 1):g}", f"{abs(v):g}"} & known):
+            bad.append(raw)
+    return sorted(set(bad))
+
+
+def gather():
+    try:
+        econ_lib.harvest()  # save any job replies not yet saved (MORNING's note, etc.)
+    except Exception:
+        pass
+    d = load_digest()
+    since = alert_since()
+    alerts = [l[2:].strip() for l in read(BASE / "HIGHLIGHTS.md").splitlines()
+              if l.startswith("- 20") and l[2:18] >= since]
+    take = read(BASE / f"reports/drafts/{TODAY}-take.md").strip()
+    active = read(BASE / "theories/active.md")
+    m = re.search(r"<!-- SUMMARY START -->(.*?)<!-- SUMMARY END -->", active, re.S)
+    heading = m.group(1).strip() if m else section(active, r"Where the economy is heading")
+    calls = [(t, b) for t, b in entries(active, "T") if "OPEN" in field(b, "STATUS").upper() or not field(b, "STATUS")]
+    scen = entries(read(BASE / "theories/scenarios.md"), "S")[-3:]
+    filed = sorted(p for p in (BASE / "corpus/raw").glob(f"{TODAY}_*.md") if not p.name.endswith("_official-data.md"))
+    yday = sorted(p for k in range(1, econ_lib.gap_days() + 1)  # every day since the last report
+                  for p in (BASE / "corpus/raw").glob(f"{TODAY - timedelta(days=k)}_*.md") if not p.name.endswith("_official-data.md"))
+    news_files = []
+    for p in filed + yday:
+        t = read(p)
+        src = re.search(r"^SOURCE:\s*(.+)$", t, re.M)
+        first = next((l.strip("# ").strip() for l in t.splitlines() if l.strip() and not re.match(r"(SOURCE|ACCESSED):", l)), p.stem)
+        news_files.append((first[:160], src.group(1).strip() if src else "", p.name))
+    try:
+        hist = json.loads((BASE / f"data/history/{TODAY}.json").read_text())
+    except Exception:
+        hist = None
+    # the model fact check (good-guy-economy-factcheck job) leaves a corrected copy of the notes and a log
+    notes = read(BASE / f"reports/factcheck/{TODAY}-notes.md") or read(BASE / f"corpus/raw/{TODAY}_collect-notes.md")
+    try:
+        mcheck = json.loads((BASE / f"reports/factcheck/{TODAY}-model.json").read_text())
+    except Exception:
+        mcheck = None
+    # partial report: never show a stage's old analysis as if it were today's
+    if "morning" in MISSING:
+        take = ""
+    if "brainstorm" in MISSING:
+        heading, calls = "", []
+    if "scenario" in MISSING:
+        scen = []
+    return d, alerts, take, heading, calls, scen, news_files, hist, notes, mcheck
+
+
+def arrow(cur, prev):
+    if prev is None:
+        return ""
+    return "▲" if cur > prev + 1e-9 else "▼" if cur < prev - 1e-9 else "■"
+
+
+def build():
+    d, alerts, take, heading, calls, scen, news_files, hist, notes, mcheck = gather()
+    title = f"US Economy — {TODAY:%A, %B} {TODAY.day}, {TODAY.year}"
+    md, h = [f"# {title}", ""], []
+    e = html.escape
+
+    def H(tag, s, cls=""):
+        h.append(f"<{tag}{f' class={chr(34)}{cls}{chr(34)}' if cls else ''}>{s}</{tag}>")
+
+    H("h1", e(title))
+    gen = f"Generated {datetime.now():%Y-%m-%d %H:%M} by Good-Guy-Economy. Facts: FRED, BLS, BEA, Fed, CBO feeds; headlines: AP and Reuters."
+    H("p", e(gen), "meta"); md += [f"_{gen}_", ""]
+
+    if d is None:
+        H("p", "⚠ No data could be collected this morning (network or FRED down). Nothing below is current.", "warn")
+        md += ["**⚠ No data could be collected this morning.**", ""]
+
+    if MISSING:
+        names = {"brainstorm": "direction calls", "scenario": "history comparisons", "morning": "the 'What it means' note"}
+        pw = ("PARTIAL REPORT: the night run did not finish " + ", ".join(MISSING) + ". Facts, data and computed history below are "
+              "from this run; " + ", ".join(names[m] for m in MISSING) + " left out rather than showing old analysis.")
+        H("p", e("⚠ " + pw), "warn"); md += [f"**⚠ {pw}**", ""]
+    if econ_lib.gap_days() > 1:
+        gl = econ_lib.gap_line()
+        H("p", e("⚠ " + gl), "warn"); md += [f"**⚠ {gl}**", ""]
+
+    # 1. alerts
+    if alerts:
+        ah = "Alerts (last 24 hours)" if econ_lib.gap_days() <= 1 else f"Alerts (since the last report, {econ_lib.baseline_date()})"
+        H("h2", ah); md += [f"## {ah}", ""]
+        h.append("<ul class=alerts>" + "".join(f"<li>{e(a)}</li>" for a in alerts) + "</ul>")
+        md += [f"- {a}" for a in alerts] + [""]
+
+    # 2. morning note: facts and calendar from scripts, interpretation from the model
+    H("h2", "Morning note")
+    md += ["## Morning note", ""]
+    changed = econ_lib.what_changed(d) if d else ["No data could be collected this morning."]
+    upcoming, cal_issues = (d or {}).get("upcoming"), (d or {}).get("calendar_issues", [])
+    if upcoming is None:
+        try:
+            upcoming, cal_issues = econ_lib.upcoming_releases(21)
+            upcoming = [(x.isoformat(), n, s_) for x, n, s_ in upcoming]
+        except Exception as ex:
+            upcoming, cal_issues = [], [f"release calendars failed ({type(ex).__name__})"]
+    nxt = econ_lib.watch_next(upcoming) or ["No scheduled releases found for the next 3 weeks."]
+    meaning = ""
+    if take:
+        meaning = econ_factcheck.morning_meaning(take)
+    # script fact check: drop any sentence that misreads tonight's data, and say which and why
+    checked = econ_factcheck.check(meaning, d, hist) if meaning and d else []
+    if mcheck:  # sentences the model check found wrong against tonight's facts
+        checked += [(x["sentence"], [f"model check: {x.get('reason') or 'wrong'}"]) for x in mcheck.get("meaning", [])
+                    if x.get("action") == "remove" and x["sentence"] in econ_factcheck.sentences(meaning)]
+    if checked:
+        meaning = econ_factcheck.remove(meaning, checked)
+        log = BASE / f"reports/factcheck/{TODAY}.json"
+        log.parent.mkdir(parents=True, exist_ok=True)
+        log.write_text(json.dumps([{"sentence": s_, "problems": p_} for s_, p_ in checked], indent=1))
+    h.append("<div class=take>")
+    h.append("<p><b>What changed</b> <span class=tag>from official data</span></p><ul>" + "".join(f"<li>{e(x)}</li>" for x in changed) + "</ul>")
+    md += ["**What changed** _(from official data)_", ""] + [f"- {x}" for x in changed] + [""]
+    if meaning:
+        h.append(f"<p><b>What it means</b> <span class=tag>ANALYSIS by the small local model</span><br>{e(meaning)}</p>")
+        md += ["**What it means** _(ANALYSIS by the small local model)_", "", meaning, ""]
+    elif checked:
+        h.append("<p><b>What it means</b> <span class=muted>— every sentence of the model's note failed the fact check (see below).</span></p>")
+        md += ["**What it means:** _every sentence of the model's note failed the fact check (see below)._", ""]
+    else:
+        h.append("<p><b>What it means</b> <span class=muted>— the model's MORNING run didn't produce a note.</span></p>")
+        md += ["**What it means:** _no note from the model this morning._", ""]
+    if checked:
+        h.append("<p class=warn>Fact check removed " + str(len(checked)) + " sentence(s) from the model's note:</p><ul class=fc>"
+                 + "".join(f"<li>“{e(s_)}”<br><span class=muted>{e('; '.join(p_))}</span></li>" for s_, p_ in checked) + "</ul>")
+        md += [f"**Fact check removed {len(checked)} sentence(s) from the model's note:**", ""]
+        md += [f"- “{s_}” — _{'; '.join(p_)}_" for s_, p_ in checked] + [""]
+    h.append("<p><b>Watch next</b> <span class=tag>official release calendars</span></p><ul>" + "".join(f"<li>{e(x)}</li>" for x in nxt) + "</ul>")
+    md += ["**Watch next** _(official release calendars)_", ""] + [f"- {x}" for x in nxt] + [""]
+    for x in cal_issues:
+        H("p", "⚠ " + e(x), "warn"); md += [f"**⚠ {x}**", ""]
+    h.append("</div>")
+    if meaning:
+        src_text = json.dumps(d) + "\n" + (econ_lib.history_text(hist) if hist else "") + "\n" + notes + "\n" + read(BASE / "subjects.md") + "\n" + "\n".join(changed)
+        bad = number_check(meaning, src_text)
+        if bad:
+            msg = "⚠ Number check: these figures in the model's sentences don't appear in tonight's data — treat them as unverified: " + ", ".join(bad)
+            H("p", e(msg), "warn"); md += [f"**{msg}**", ""]
+        else:
+            H("p", "✓ Number check: every figure in the model's sentences matches tonight's data.", "muted"); md += ["_✓ Number check passed._", ""]
+
+    if heading:
+        H("h3", "Where it's heading (weekly scorecard)")
+        h.append("<div class=take>" + "".join(f"<p>{e(l)}</p>" for l in heading.splitlines() if l.strip()) + "</div>")
+        md += ["### Where it's heading (weekly scorecard)", "", heading, ""]
+
+    # 3. numbers
+    if d:
+        H("h2", "Key numbers"); md += ["## Key numbers", "", "| Indicator | Latest | Period | Previous | ~1 yr ago | |", "|---|---|---|---|---|---|"]
+        rows = []
+        for i in d["indicators"]:
+            prev = i["prev"][1] if i["prev"] else None
+            yr = i["year_ago"][1] if i["year_ago"] else None
+            new = "NEW" if i["new"] else ""
+            per = i.get("period_label") or i["period"]
+            rows.append(f"<tr><td>{e(i['label'])}</td><td class=num><b>{fmt(i['value'])}</b> {e(i['unit'])}</td><td>{per}</td>"
+                        f"<td class=num>{arrow(i['value'], prev)} {fmt(prev) if prev is not None else ''}</td>"
+                        f"<td class=num>{fmt(yr) if yr is not None else ''}</td><td>{'<span class=new>NEW</span>' if new else ''}</td></tr>")
+            md.append(f"| {i['label']} | {fmt(i['value'])} {i['unit']} | {per} | {fmt(prev) if prev is not None else ''} | {fmt(yr) if yr is not None else ''} | {new} |")
+        h.append("<div class=scroll><table><thead><tr><th>Indicator</th><th>Latest</th><th>Period</th><th>Previous</th><th>~1 yr ago</th><th></th></tr></thead><tbody>"
+                 + "".join(rows) + "</tbody></table></div>")
+        H("p", "NEW = a value published since the previous run. Inflation, retail sales and industrial production are year-over-year %; payrolls are the monthly change.", "muted")
+        md += ["", "_NEW = published since the previous run._", ""]
+
+    if hist:
+        H("h2", "Today vs history <span class=tag>computed from FRED + NBER recession dates — no model involved</span>")
+        md += ["## Today vs history (computed, no model)", ""]
+        L = hist.get("lights")
+        if L:
+            dots = "".join("<span class='dot on'></span>" if i < L["on"] else "<span class=dot></span>" for i in range(L["total"]))
+            line = f"Recession warning lights: {L['on']} of {L['total']} on ({L['as_of']})"
+            h.append(f"<p class=lights>{dots} <b>{e(line)}</b></p>")
+            md.append(f"**{line}**" + (f" — {', '.join(L['on_list'])}" if L["on_list"] else ""))
+            if L["on_list"]:
+                H("p", "On: " + e(", ".join(L["on_list"])), "muted")
+            if L["months_with_at_least"]:
+                rate = round(100 * L["followed_12m"] / L["months_with_at_least"])
+                expl = (f"Since {L['since'][:4]}, in months with {str(L['on']) + ' or more' if L['on'] else 'no'} lights on, a recession began "
+                        f"within 12 months {rate}% of the time ({L['followed_12m']} of {L['months_with_at_least']} months). "
+                        f"Base rate for any month: {L['base_rate']}%.")
+                H("p", e(expl)); md += ["", expl, ""]
+        rows = []
+        for c in hist["conditions"]:
+            if not c["now"]:
+                continue
+            r = {int(k): v for k, v in c["recession"].items()}
+            ue = f"{c['unemp_change_median']:+} pt" if c["unemp_change_median"] is not None else "—"
+            weak = " <span class=muted>(few cases)</span>" if r[12][1] < 3 else ""
+            rows.append(f"<tr><td>{e(c['text'])}{weak}</td><td class=num>{fmt(c['now_value'])} <span class=muted>({c['now_period']})</span></td>"
+                        f"<td class=num>{c['episodes']} since {c['since'][:4]}</td><td class=num>{r[12][0]} of {r[12][1]}</td>"
+                        f"<td class=num>{r[24][0]} of {r[24][1]}</td><td class=num>{ue}</td></tr>"
+                        + (f"<tr class=verdict><td colspan=6>→ {e(c['verdict'])}</td></tr>" if c.get("verdict") else ""))
+            md.append(f"- {c['text']} — now {fmt(c['now_value'])} ({c['now_period']}); {c['episodes']} past episodes since {c['since'][:4]}; "
+                      f"recession within 12 mo: {r[12][0]} of {r[12][1]}, within 24 mo: {r[24][0]} of {r[24][1]}; unemployment 12 mo later (median): {ue}"
+                      + (f"\n  - → {c['verdict']}" if c.get("verdict") else ""))
+        if rows:
+            H("p", "Conditions true now, and what followed each past time they began:")
+            h.append("<div class=scroll><table><thead><tr><th>Condition</th><th>Now</th><th>Past cases</th><th>Recession ≤12 mo</th>"
+                     "<th>≤24 mo</th><th>Unemployment 12 mo later</th></tr></thead><tbody>" + "".join(rows) + "</tbody></table></div>")
+        else:
+            H("p", "None of the tracked conditions is true right now.", "muted")
+        off = [c["text"] for c in hist["conditions"] if not c["now"]]
+        H("p", "Not true now: " + e("; ".join(off)), "muted"); md += ["", "_Not true now: " + "; ".join(off) + "_", ""]
+
+        # 4. releases + headlines
+        H("h2", "Official releases (last 3 days)"); md += ["## Official releases (last 3 days)", ""]
+        if d["releases"]:
+            h.append("<ul>" + "".join(f"<li><span class=src>{e(r['src'])}</span> {e(r['date'])} — " + (f"<a href='{e(r['link'])}'>{e(r['title'])}</a>" if r["link"] else e(r["title"])) + "</li>" for r in d["releases"]) + "</ul>")
+            md += [f"- [{r['src']}] {r['date']} — {r['title']} {r['link']}" for r in d["releases"]] + [""]
+        else:
+            H("p", "None.", "muted"); md += ["None.", ""]
+        H("h2", "Headlines (AP, Reuters — last 24 hours)"); md += ["## Headlines (AP, Reuters — last 24 hours)", ""]
+        if d["headlines"]:
+            h.append("<ul>" + "".join(f"<li><span class=src>{e(x['src'])}</span> {e(x['title'])}</li>" for x in d["headlines"]) + "</ul>")
+            md += [f"- [{x['src']}] {x['title']}" for x in d["headlines"]] + [""]
+        else:
+            H("p", "None found.", "muted"); md += ["None found.", ""]
+
+    if notes.strip():
+        body = re.sub(r"^(SOURCE|ACCESSED):.*\n", "", notes, flags=re.M)
+        body = re.sub(r"^## COLLECT run .*\n", "", body, flags=re.M).strip()
+        H("h2", "News notes <span class=tag>summarised by the model from official text — sources named per item</span>")
+        md += ["## News notes (model summaries of official text)", "", body, ""]
+        out = []
+        for ln in body.splitlines():
+            if ln.startswith("###"):
+                out.append(f"<h3>{e(ln.lstrip('# '))}</h3>")
+            elif ln.startswith(("- ", "* ")):
+                out.append(f"<li>{e(ln[2:])}</li>")
+            elif ln.strip():
+                out.append(f"<p class=muted>{e(ln)}</p>")
+        h.append("<div class=notes>" + "".join(out) + "</div>")
+    if mcheck and mcheck.get("notes"):
+        items = mcheck["notes"]
+        changed = [x for x in items if x.get("action") in ("replaced", "removed", "unchecked")]
+        summary = (f"Fact check (model + script, {len(items)} notes): {sum(x.get('action') == 'kept' for x in items)} confirmed against the source, "
+                   f"{sum(x.get('action') == 'replaced' for x in items)} replaced with the source's own sentence, "
+                   f"{sum(x.get('action') == 'removed' for x in items)} removed, {sum(x.get('action') == 'unchecked' for x in items)} not checked.")
+        H("p", e(summary), "warn" if changed else "muted"); md += [f"_{summary}_", ""]
+        if changed:
+            h.append("<ul class=fc>" + "".join(f"<li>{e(x['action'].upper())}: “{e(x['original'][2:])}”"
+                                                + (f"<br>→ {e(x['new'][2:])}" if x.get("new") else "")
+                                                + f"<br><span class=muted>{e(x.get('reason', ''))}</span></li>" for x in changed) + "</ul>")
+            md += [f"- {x['action'].upper()}: “{x['original'][2:]}”" + (f" → {x['new'][2:]}" if x.get("new") else "")
+                   + f" — _{x.get('reason', '')}_" for x in changed] + [""]
+    news_files = [f for f in news_files if not f[2].endswith("collect-notes.md")]
+    if news_files:
+        H("h2", "Stories Good-Guy-Economy read and filed"); md += ["## Stories Good-Guy-Economy read and filed", ""]
+        h.append("<ul>" + "".join(f"<li>{e(t)}" + (f" <span class=muted>— {e(s)}</span>" if s else "") + "</li>" for t, s, _ in news_files[:12]) + "</ul>")
+        md += [f"- {t} — {s}" for t, s, _ in news_files[:12]] + [""]
+
+    # 5. history + calls
+    if scen:
+        H("h2", "History comparisons <span class=tag>computed by econ-history, read by the model</span>"); md += ["## History comparisons", ""]
+        for t, b in scen:
+            res = "\n".join(l.strip("- ").strip() for l in b.splitlines() if "recession within" in l)
+            res = res or field(b, "RESULT")
+            h.append(f"<div class=card><b>{e(t)}</b><pre>{e(res)}</pre></div>")
+            md += [f"**{t}**", "", res, ""]
+    if calls:
+        H("h2", "Open direction calls <span class=tag>ANALYSIS</span>"); md += ["## Open direction calls (ANALYSIS)", ""]
+        h.append("<ul>" + "".join(f"<li>{e(t)} <span class=muted>— confidence {e(field(b, 'CONFIDENCE') or '?')}; wrong if: {e(field(b, 'WOULD BE WRONG IF') or '?')}</span></li>" for t, b in calls[:8]) + "</ul>")
+        md += [f"- {t} — confidence {field(b, 'CONFIDENCE') or '?'}" for t, b in calls[:8]] + [""]
+
+    if d and d.get("failed"):
+        H("p", "Could not fetch: " + e("; ".join(d["failed"])) + " (no data — not 'nothing happened').", "muted")
+        md += [f"_Could not fetch: {'; '.join(d['failed'])}_", ""]
+
+    css = """:root{--bg:#fbfaf7;--fg:#1f2328;--mut:#6b7280;--line:#e5e2da;--acc:#1d4ed8;--warn:#b45309;--card:#fff}
+@media (prefers-color-scheme:dark){:root{--bg:#16181c;--fg:#e6e6e6;--mut:#9aa0a6;--line:#2e3238;--acc:#8ab4f8;--warn:#fbbf24;--card:#1e2126}}
+body{background:var(--bg);color:var(--fg);font:16px/1.55 system-ui,sans-serif;max-width:860px;margin:0 auto;padding:24px 16px}
+h1{font-size:1.6em;margin:0 0 4px}h2{font-size:1.15em;margin:28px 0 8px;border-bottom:1px solid var(--line);padding-bottom:4px}
+.meta,.muted{color:var(--mut);font-size:.9em}.tag{font-size:.65em;font-weight:500;color:var(--mut);margin-left:6px}
+.warn,.alerts li{color:var(--warn);font-weight:600}.take{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:4px 14px}
+.scroll{overflow-x:auto}table{border-collapse:collapse;width:100%;font-size:.92em}th,td{text-align:left;padding:5px 8px;border-bottom:1px solid var(--line)}
+td.num{font-variant-numeric:tabular-nums;white-space:nowrap}.new{background:var(--acc);color:var(--bg);border-radius:4px;padding:0 5px;font-size:.75em}
+.src{font-size:.75em;font-weight:700;color:var(--acc);margin-right:4px}a{color:var(--acc)}.card{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:8px 12px;margin:8px 0}
+pre{white-space:pre-wrap;margin:6px 0 0;font-size:.9em}
+.dot{display:inline-block;width:12px;height:12px;border-radius:50%;border:2px solid var(--mut);margin-right:3px;vertical-align:-1px}
+.dot.on{background:var(--warn);border-color:var(--warn)}.lights{margin:8px 0}.notes h3{font-size:1em;margin:14px 0 4px}tr.verdict td{color:var(--mut);font-size:.88em;border-bottom:1px solid var(--line);padding-top:0}.notes li{margin-left:18px}.fc li{margin-bottom:6px}"""
+    page = f"<!doctype html><html lang=en><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>{e(title)}</title><style>{css}</style></head><body>{''.join(h)}</body></html>"
+    OUT.mkdir(exist_ok=True)
+    out_html, out_md = OUT / f"{TODAY}.html", OUT / f"{TODAY}.md"
+    out_html.write_text(page)
+    out_md.write_text("\n".join(md) + "\n")
+    latest = OUT / "latest.html"
+    if latest.is_symlink() or latest.exists():
+        latest.unlink()
+    latest.symlink_to(out_html.name)
+    econ_lib.mark_reported(MISSING)
+    return out_html, d, alerts
+
+
+def notify():
+    out = OUT / f"{TODAY}.html"
+    d, alerts = None, []
+    if not out.exists():
+        if not ready():
+            return
+        out, d, alerts = build()
+    else:
+        d = load_digest()
+        since = alert_since()
+        alerts = [l for l in read(BASE / "HIGHLIGHTS.md").splitlines() if l.startswith("- 20") and l[2:18] >= since]
+    lines = []
+    st = econ_lib.report_state()
+    if st.get("last_report_date") == TODAY.isoformat() and st.get("last_partial"):
+        lines.append("Partial report: " + ", ".join(st["last_partial"]) + " did not finish")
+    if alerts:
+        lines.append(f"⚠ {len(alerts)} alert(s)")
+    if d:
+        new = [i for i in d["indicators"] if i["new"]]
+        for i in new[:4]:
+            lines.append(f"{i['label']}: {fmt(i['value'])} {i['unit']}")
+        if not new:
+            lines.append("No new data releases since the last run.")
+    body = "\n".join(lines) or "Report ready."
+    if not shutil.which("notify-send"):
+        print(body)
+        return
+    try:
+        r = subprocess.run(["notify-send", "-a", "Good-Guy-Economy", "-i", "x-office-document", "-A", "open=Open report", "--wait",
+                            f"US economy report — {TODAY:%b} {TODAY.day}", body], capture_output=True, text=True, timeout=4 * 3600)
+        if r.stdout.strip() == "open":
+            subprocess.Popen(["xdg-open", str(out)], start_new_session=True)
+    except subprocess.TimeoutExpired:
+        pass
+
+
+if __name__ == "__main__":
+    if "--notify" in sys.argv:
+        notify()
+    elif ready():
+        p, _, _ = build()
+        print(p)

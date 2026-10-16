@@ -1,0 +1,15 @@
+[Unit]
+Description=Good-Guy-Economy Disk Watchdog — alerts at 75/80/85/90%, pauses at 90%
+After=network.target
+
+[Service]
+Type=simple
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%U/bus
+Environment=DISPLAY=:0
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/python3 %h/.local/bin/good-guy-economy-diskwatch
+Restart=on-failure
+RestartSec=15
+
+[Install]
+WantedBy=default.target

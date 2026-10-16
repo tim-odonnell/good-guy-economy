@@ -1,0 +1,12 @@
+[Unit]
+Description=SearXNG — local meta-search engine (localhost:8888, JSON API)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/searxng-run
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target

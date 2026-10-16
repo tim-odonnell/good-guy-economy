@@ -1,0 +1,26 @@
+[Unit]
+Description=Good-Guy-Economy LLM — llama.cpp (backend/model/device configured in ~/.config/good-guy-economy/model.env)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/good-guy-economy-llm-run
+Restart=on-failure
+RestartSec=10
+TimeoutStartSec=240
+
+# On a single-model box (no separate GPU-hosted reasoning model), this is the
+# single biggest RSS consumer on the machine -- there's no smaller sibling to
+# protect it from anymore, it IS the thing that needs protecting. Same
+# systemd-oomd trap documented in gemma-dispatcher.service: oomd kills by PSI
+# pressure and ignores MemoryLow/MemoryMin, so only ManagedOOMPreference=avoid
+# actually excludes this unit from being oomd's kill target. MemoryMax is a
+# ceiling, not a target -- measured ~7.6GB RSS at ctx=65536 on this machine
+# 2026-09-15 (the floor hermes-agent requires -- see model.env). 9G leaves
+# headroom for normal variance without immediately hitting the cap and
+# getting hard-killed instead of just running out of KV.
+MemoryMax=9G
+ManagedOOMPreference=avoid
+
+[Install]
+WantedBy=default.target

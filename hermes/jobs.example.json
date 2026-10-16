@@ -1,0 +1,93 @@
+{
+ "_comment": "Good-Guy-Economy's six Hermes cron jobs (schedule = local time). install.sh prints how to add them; see docs/INSTALL.md.",
+ "jobs": [
+  {
+   "name": "good-guy-economy-collect",
+   "schedule": {
+    "kind": "cron",
+    "expr": "5 1 * * *"
+   },
+   "script": "econ-digest.py",
+   "no_agent": false,
+   "prompt": "COLLECT mode. The Script Output above has a READING PACK (official text) and WIRE HEADLINES. Your final reply = news notes, one block for each READING PACK item (at most 3), plus at most 1 headline you check with web_search. Format for each block:\n### <short title>\nSOURCE: <URL or outlet>\n- [DATA] or [REPORTED] <fact with its number and period, copied from the text>\n(2-5 bullets per block). After the blocks, one line: GAPS: <what you could not check, or none>. Facts only, no analysis.",
+   "enabled_toolsets": [
+    "web"
+   ],
+   "deliver": "local",
+   "workdir": "~/.hermes/investigations/active"
+  },
+  {
+   "name": "good-guy-economy-brainstorm",
+   "schedule": {
+    "kind": "cron",
+    "expr": "45 1 * * *"
+   },
+   "script": "econ-pre-brainstorm.py",
+   "no_agent": false,
+   "prompt": "BRAINSTORM mode. Using ONLY the context above, your final reply = the complete updated list of direction calls about the next 3-12 months (at most 6; one each for growth, jobs, inflation, rates, recession risk). Each call must say a DIRECTION (rising / falling / steady). Keep an existing call and its T-number unless the data contradicts it. For history, use only the \"MEANING (computed)\" lines - never claim a condition preceded recessions unless its MEANING says HIGHER. Format for each:\n### T-<n>: <one-line call with a direction>\n- CONFIDENCE: low / medium / high\n- EVIDENCE FOR: numbers with periods, copied from KEY NUMBERS\n- EVIDENCE AGAINST: numbers with periods, copied from KEY NUMBERS\n- HISTORY SAYS: copy one MEANING line, or no match\n- WOULD BE WRONG IF: a specific future reading\n- CHECK BY: YYYY-MM-DD\n- STATUS: OPEN",
+   "enabled_toolsets": [
+    "file"
+   ],
+   "deliver": "local",
+   "workdir": "~/.hermes/investigations/active"
+  },
+  {
+   "name": "good-guy-economy-scenario",
+   "schedule": {
+    "kind": "cron",
+    "expr": "25 2 * * *"
+   },
+   "script": "econ-pre-scenario.py",
+   "no_agent": false,
+   "prompt": "SCENARIO mode. The TODAY VS HISTORY block above was computed from decades of data, including a \"MEANING (computed)\" line for each condition. Your final reply = one entry for each condition that is TRUE now (at most 3):\n### S-<YYYYMMDD>-<n>: <condition>\n- TODAY: <reading and period>\n- HISTORY: <copy the counts exactly>\n- MEANING: <copy its MEANING (computed) line exactly>\n- WHAT IT SUGGESTS: 1 sentence [ANALYSIS] that agrees with MEANING (if MEANING says USUAL or LOWER, do not call it a warning sign)\n- DIFFERENCES NOW: 1 sentence on why this time may differ\nThen one last line: WARNING LIGHTS: <copy the RECESSION WARNING LIGHTS line exactly>.",
+   "enabled_toolsets": [
+    "file"
+   ],
+   "deliver": "local",
+   "workdir": "~/.hermes/investigations/active"
+  },
+  {
+   "name": "good-guy-economy-refine",
+   "schedule": {
+    "kind": "cron",
+    "expr": "0 3 * * 1"
+   },
+   "script": "econ-pre-refine.py",
+   "no_agent": false,
+   "prompt": "REFINE mode (weekly). Test each current call against the KEY NUMBERS, looking first for evidence that it is WRONG. Your final reply starts with this block:\nWhere the economy is heading:\n- Growth: up / down / flat (confidence) - reason with a number\n- Jobs: ...\n- Inflation: ...\n- Rates: ...\n- Recession risk: ...\nthen the full updated list of calls in the same ### T-<n> format as the current calls, then one line per dropped call: RETIRED: T-<n> - reason.",
+   "enabled_toolsets": [
+    "file"
+   ],
+   "deliver": "local",
+   "workdir": "~/.hermes/investigations/active"
+  },
+  {
+   "name": "good-guy-economy-morning",
+   "schedule": {
+    "kind": "cron",
+    "expr": "5 3 * * *"
+   },
+   "script": "econ-pre-morning.py",
+   "no_agent": false,
+   "prompt": "MORNING mode. The report already has \"What changed\" and \"Watch next\", written by scripts from official data and calendars (shown in the context). Your only job: the \"What it means\" part. Final reply = 2 or 3 plain sentences, 70 words at most, starting with \"What it means:\".\nRules: base it on the RECESSION WARNING LIGHTS line and the \"MEANING (computed)\" lines, and on what changed. Never call a condition a warning sign unless its MEANING says HIGHER. Do not compare two indicators with each other and do not quote any number or date that is not written exactly in the context. Mark it [ANALYSIS].",
+   "enabled_toolsets": [
+    "file"
+   ],
+   "deliver": "local",
+   "workdir": "~/.hermes/investigations/active"
+  },
+  {
+   "name": "good-guy-economy-factcheck",
+   "schedule": {
+    "kind": "cron",
+    "expr": "40 3 * * *"
+   },
+   "script": "econ-modelcheck.py",
+   "no_agent": true,
+   "prompt": "",
+   "enabled_toolsets": null,
+   "deliver": "local",
+   "workdir": "~/.hermes/investigations/active"
+  }
+ ]
+}

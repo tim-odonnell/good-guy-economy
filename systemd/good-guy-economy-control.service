@@ -1,0 +1,13 @@
+[Unit]
+Description=Good-Guy-Economy Control — backend for the single desktop icon (status/start/stop/topic API)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/good-guy-economy-control
+ExecStart=%h/.hermes/hermes-agent/venv/bin/python -m uvicorn server:app --host 127.0.0.1 --port 8420
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

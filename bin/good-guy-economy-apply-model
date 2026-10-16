@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# Run this after editing ~/.config/good-guy-economy/model.env (e.g. to swap
+# to a new model/quant) to apply the change and restart the LLM service.
+set -euo pipefail
+
+MODEL_ENV="$HOME/.config/good-guy-economy/model.env"
+set -a
+source "$MODEL_ENV"
+set +a
+
+echo "Applying model config..."
+echo "  backend: ${GOOD_GUY_ECONOMY_BACKEND:-vulkan}"
+echo "  model:   $GOOD_GUY_ECONOMY_MODEL_PATH"
+echo "  device:  ${GOOD_GUY_ECONOMY_GPU_DEVICE:-(cpu)}"
+echo "  context: $GOOD_GUY_ECONOMY_CTX"
+
+# Keep hermes's own config in sync (llama-server's --alias is fixed as
+# "good-guy-economy-llm" by good-guy-economy-llm-run, so model.default never needs to change —
+# only context length needs to track model.env if it's ever adjusted).
+hermes config set model.default good-guy-economy-llm >/dev/null
+hermes config set model.context_length "$GOOD_GUY_ECONOMY_CTX" >/dev/null
+
+echo "Restarting good-guy-economy-llm.service..."
+systemctl --user restart good-guy-economy-llm.service
+
+echo -n "Waiting for model to load"
+for i in $(seq 1 60); do
+    if curl -sf --max-time 2 http://127.0.0.1:8099/health 2>/dev/null | grep -q '"status":"ok"'; then
+        echo " ready."
+        exit 0
+    fi
+    echo -n "."
+    sleep 2
+done
+echo
+echo "WARNING: model did not report ready within 120s — check: systemctl --user status good-guy-economy-llm.service" >&2
+exit 1

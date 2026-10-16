@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+# STOP the Good-Guy-Economy agent cleanly: gateway first (stops launching sessions),
+# then browser, then the model engine. Mirrors the START-STOP-RUNBOOK.
+set -u
+
+echo "==============================================="
+echo "  ⏹️  Stopping Good-Guy-Economy agent"
+echo "==============================================="
+echo
+
+# Warn if a session is actively thinking (llama CPU high).
+llpid="$(pgrep -f llama-server | head -1)"
+if [ -n "${llpid:-}" ]; then
+  cpu="$(ps -o pcpu= -p "$llpid" 2>/dev/null | tr -d ' ')"
+  cpu_int="${cpu%%.*}"
+  if [ -n "${cpu_int:-}" ] && [ "${cpu_int:-0}" -gt 50 ] 2>/dev/null; then
+    echo "  ⚠️  A session looks ACTIVE (llama CPU ${cpu}%)."
+    echo "      Saved corpus files are safe; only unsaved in-progress"
+    echo "      research would be cut off (and it's reproducible)."
+    echo
+    read -r -p "  Stop anyway? [y/N] " ans
+    case "$ans" in
+      y|Y|yes|YES) ;;
+      *) echo "  Aborted. Nothing stopped."; echo; echo "[press Enter to close]"; read -r; exit 0 ;;
+    esac
+    echo
+  fi
+fi
+
+echo "[1/3] Stopping the gateway + scheduler..."
+systemctl --user stop hermes-gateway.service
+# hermes-gateway exits 1 on SIGTERM (cosmetic) and self-rewrites its own unit file,
+# so a unit-file SuccessExitStatus fix won't stick — just clear the flag here instead.
+systemctl --user reset-failed hermes-gateway.service 2>/dev/null
+echo "[2/3] Stopping the browser..."
+systemctl --user stop camofox-browser.service
+echo "[3/3] Stopping the model engine..."
+systemctl --user stop good-guy-economy-llm.service
+systemctl --user stop good-guy-economy-notifier.service
+systemctl --user stop good-guy-economy-diskwatch.service
+
+# A leftover in-flight generation can keep llama pinned after the gateway stops.
+sleep 2
+if pgrep -f llama-server >/dev/null 2>&1; then
+  echo "      (llama-server still winding down a leftover request — killing it)"
+  systemctl --user stop good-guy-economy-llm.service 2>/dev/null
+fi
+echo
+
+echo "-----------------------------------------------"
+echo "  Status"
+echo "-----------------------------------------------"
+for s in hermes-gateway camofox-browser good-guy-economy-llm good-guy-economy-notifier good-guy-economy-diskwatch; do
+  printf "  %-18s %s\n" "$s" "$(systemctl --user is-active $s.service)"
+done
+echo
+echo "  ✅ Done. All 'inactive' = Good-Guy-Economy is fully stopped."
+echo "     (Autostart is OFF — nothing comes back until you run Good-Guy-Economy START again.)"
+echo
+echo "[press Enter to close]"
+read -r

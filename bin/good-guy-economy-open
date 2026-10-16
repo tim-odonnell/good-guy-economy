@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Launched by the "Good-Guy-Economy" desktop icon. Starts the control server (if not
+# already running) and opens the app in the system's default browser.
+set -u
+
+systemctl --user start good-guy-economy-control.service
+
+for i in $(seq 1 30); do
+    if curl -sf --max-time 1 http://127.0.0.1:8420/api/health >/dev/null 2>&1; then
+        xdg-open http://127.0.0.1:8420/ >/dev/null 2>&1 &
+        exit 0
+    fi
+    sleep 0.5
+done
+
+notify-send -a "Good-Guy-Economy" -u critical "Good-Guy-Economy couldn't start" \
+    "The control server didn't come up. Try again, or check: systemctl --user status good-guy-economy-control.service" \
+    2>/dev/null
+exit 1

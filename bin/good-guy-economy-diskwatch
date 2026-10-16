@@ -1,0 +1,167 @@
+#!/usr/bin/env python3
+"""Good-Guy-Economy disk watchdog.
+
+Watches disk usage on /home and:
+  - sends escalating alerts (desktop + Telegram) at 75/80/85/90% USED,
+    each threshold announced once (no spam),
+  - PAUSES the Good-Guy-Economy investigation cron at >=90% so it stops writing data,
+  - AUTO-RESUMES it once usage falls back to RESUME_AT (hysteresis), but only if
+    the watchdog is the one that paused it (won't override a manual pause).
+
+Thresholds are % USED. STOP at 90% used. RESUME at RESUME_AT% used (default 75,
+i.e. resume when there's >=25% free again). Note: "resume when >90% free" taken
+literally means <10% used, which would require deleting Good-Guy-Economy's own model —
+so RESUME_AT defaults to a sensible 75. Change it below if you want.
+"""
+import json
+import os
+import shutil
+import subprocess
+import time
+from pathlib import Path
+
+MOUNT = "/home"
+THRESHOLDS = [75, 80, 85, 90]
+STOP_AT = 90            # pause investigations at/above this % used
+RESUME_AT = 75         # resume once back at/below this % used (hysteresis)
+CHECK_INTERVAL = 600   # seconds between checks (10 min)
+
+STATE = Path.home() / ".hermes/.diskwatch_state.json"
+JOBS_FILE = Path.home() / ".hermes/cron/jobs.json"
+ENV_FILE = Path.home() / ".hermes/.env"
+HERMES = shutil.which("hermes") or str(Path.home() / ".local/bin/hermes")
+
+
+def used_pct() -> int:
+    # test hook: DISKWATCH_TEST_PCT overrides the real reading
+    t = os.getenv("DISKWATCH_TEST_PCT")
+    if t:
+        return int(t)
+    total, used, free = shutil.disk_usage(MOUNT)
+    return round(used * 100 / total)
+
+
+def read_env() -> dict:
+    out = {}
+    try:
+        for line in ENV_FILE.read_text().splitlines():
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                k, v = line.split("=", 1)
+                out[k.strip()] = v.strip().strip('"').strip("'")
+    except Exception:
+        pass
+    return out
+
+
+def load_state() -> dict:
+    try:
+        return json.loads(STATE.read_text())
+    except Exception:
+        return {"alerted": [], "paused_by_watchdog": False}
+
+
+def save_state(s: dict) -> None:
+    try:
+        STATE.write_text(json.dumps(s))
+    except Exception:
+        pass
+
+
+def desktop(title: str, body: str) -> None:
+    try:
+        subprocess.run(["notify-send", "-u", "critical", "-a", "Good-Guy-Economy Disk",
+                        title, body], timeout=10,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        pass
+
+
+def telegram(text: str, env: dict) -> None:
+    tok, chat = env.get("TELEGRAM_BOT_TOKEN"), env.get("TELEGRAM_CHAT_ID")
+    if not tok or not chat:
+        return
+    try:
+        import urllib.parse, urllib.request
+        data = urllib.parse.urlencode({"chat_id": chat, "text": text}).encode()
+        urllib.request.urlopen(
+            f"https://api.telegram.org/bot{tok}/sendMessage", data=data, timeout=15)
+    except Exception:
+        pass
+
+
+def alert(title: str, body: str) -> None:
+    env = read_env()
+    desktop(title, body)
+    telegram(f"{title}\n{body}", env)
+
+
+def all_jobs() -> list:
+    try:
+        d = json.loads(JOBS_FILE.read_text())
+        return [(j["id"], j.get("state", "")) for j in d.get("jobs", [])]
+    except Exception:
+        return []
+
+
+def cron(action: str, job_id: str) -> None:
+    try:
+        subprocess.run([HERMES, "cron", action, job_id], timeout=30,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        pass
+
+
+def check_once() -> None:
+    pct = used_pct()
+    st = load_state()
+    alerted = set(st.get("alerted", []))
+    free_pct = 100 - pct
+
+    # Escalating threshold alerts (each once, upward)
+    for th in THRESHOLDS:
+        if pct >= th and th not in alerted:
+            alerted.add(th)
+            emoji = "🛑" if th >= STOP_AT else "⚠️"
+            alert(f"{emoji} Disk {pct}% used ({free_pct}% free)",
+                  f"Crossed {th}% on {MOUNT}." +
+                  (" Pausing Good-Guy-Economy." if th >= STOP_AT else ""))
+    # Reset alerts that no longer apply (so re-crossing re-alerts)
+    alerted = {th for th in alerted if pct >= th}
+
+    # Pause at/above STOP_AT — pause every active job, remember which
+    if pct >= STOP_AT and not st.get("paused_jobs"):
+        paused = []
+        for jid, state in all_jobs():
+            if state == "scheduled":
+                cron("pause", jid)
+                paused.append(jid)
+        st["paused_jobs"] = paused
+        alert("🛑 Good-Guy-Economy PAUSED — disk critical",
+              f"{pct}% used. Investigations halted until disk is back to "
+              f"<= {RESUME_AT}% used (>= {100-RESUME_AT}% free). Free some space.")
+
+    # Resume once recovered — only the jobs WE paused
+    if pct <= RESUME_AT and st.get("paused_jobs"):
+        for jid in st.get("paused_jobs", []):
+            cron("resume", jid)
+        st["paused_jobs"] = []
+        alert("✅ Good-Guy-Economy RESUMED — disk recovered",
+              f"{pct}% used ({free_pct}% free). Investigations back on.")
+
+    st["alerted"] = sorted(alerted)
+    save_state(st)
+
+
+def main() -> None:
+    while True:
+        check_once()
+        time.sleep(CHECK_INTERVAL)
+
+
+if __name__ == "__main__":
+    import sys
+    if "--once" in sys.argv:
+        check_once()
+    else:
+        main()

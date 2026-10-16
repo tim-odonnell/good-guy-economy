@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Good-Guy-Economy</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <span class="brand">🔎 Good-Guy-Economy</span>
+  <span id="topbar-status" class="topbar-status"></span>
+</header>
+
+<main>
+
+  <!-- LOADING SCREEN -->
+  <section id="screen-loading" class="screen">
+    <div class="card center">
+      <div class="spinner" aria-hidden="true"></div>
+      <h1>Starting Good-Guy-Economy…</h1>
+      <p class="muted">Loading the research engine. This can take up to a minute or two the
+        first time.</p>
+      <ul id="loading-steps" class="steps"></ul>
+    </div>
+  </section>
+
+  <!-- TOPIC FORM -->
+  <section id="screen-topic" class="screen">
+    <div class="card">
+      <h1>What are you researching?</h1>
+      <p class="muted">
+        Describe the story or subject you want Good-Guy-Economy to work on — people,
+        organizations, places, or events involved, and what you suspect or want to
+        find out. A few sentences is plenty; you can always add more detail later.
+      </p>
+      <form id="topic-form">
+        <textarea id="topic-input" rows="6" placeholder="e.g. City council contract awards to Acme Construction over the past three years — I want to know whether any council members have undisclosed ties to the company."></textarea>
+        <button type="submit" id="topic-submit">Start this investigation</button>
+      </form>
+      <p id="topic-error" class="error" hidden></p>
+
+      <details class="explainer">
+        <summary>What does Good-Guy-Economy do?</summary>
+        <p>
+          Once you describe a topic, Good-Guy-Economy works on it in the background on a
+          schedule — gathering public records and news, cross-checking names and
+          organizations against each other, and building up theories worth
+          chasing. You control when it's actively running with the Start / Pause /
+          Stop buttons on the next screen. Findings worth your attention show up
+          as desktop notifications and on the dashboard.
+        </p>
+        <p>
+          Good-Guy-Economy only uses public sources it can reach on its own — it can't
+          file public-records/FOIA requests for you, but it will flag good targets
+          for you to file yourself.
+        </p>
+      </details>
+    </div>
+  </section>
+
+  <!-- DASHBOARD -->
+  <section id="screen-dashboard" class="screen">
+    <div class="card wide">
+      <h1>Current investigation</h1>
+      <p id="dash-topic" class="topic-text"></p>
+      <button id="btn-new-topic" class="link-button">Start a new investigation…</button>
+
+      <div class="controls">
+        <button id="btn-start" class="btn btn-primary">▶ Start</button>
+        <button id="btn-pause" class="btn">⏸ Pause</button>
+        <button id="btn-stop" class="btn btn-danger">⏻ Stop</button>
+      </div>
+      <p id="dash-state" class="muted"></p>
+
+      <h2>Schedule</h2>
+      <div id="jobs-list" class="jobs-list"></div>
+
+      <h2>Recent findings</h2>
+      <ul id="highlights-list" class="highlights-list"></ul>
+    </div>
+  </section>
+
+  <!-- CONFIRM MODAL -->
+  <div id="modal-overlay" class="modal-overlay" hidden>
+    <div class="modal">
+      <p id="modal-message"></p>
+      <div class="modal-buttons">
+        <button id="modal-cancel" class="btn">Cancel</button>
+        <button id="modal-confirm" class="btn btn-danger">Confirm</button>
+      </div>
+    </div>
+  </div>
+
+</main>
+
+<script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,10 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Good-Guy-Economy
+Comment=Your research assistant
+Exec=/home/user/.local/bin/good-guy-economy-open
+Icon=/home/user/.local/share/icons/good-guy-economy/good-guy-economy.svg
+Terminal=false
+StartupNotify=true
+Categories=Utility;

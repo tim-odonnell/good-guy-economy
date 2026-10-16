@@ -1,0 +1,69 @@
+# NOT DEPLOYED on the N100/CPU-only variant of this repo (see
+# docs/INSTALL.md, "CPU-inference machines"). That variant has no
+# separate GPU-hosted reasoning model to protect Gemma's RAM from — there's
+# only one small model on the whole box, so gemma-dispatch-ui talks directly
+# to good-guy-economy-llm on :8099 instead of a second resident model here. Kept
+# in the repo, undeployed, so the two-tier pattern isn't lost for anyone
+# moving this repo back to a GPU+CPU machine.
+[Unit]
+Description=Gemma Dispatcher — Gemma 4 12B (CPU only, MTP) for computer control and tool calling
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/gemma-dispatcher-run
+# Lowers oom_score_adj to -900 via a tiny root helper (see the OOM notes
+# below). Leading '-' : if the helper is not installed, startup still succeeds.
+ExecStartPost=-/usr/bin/sudo -n /usr/local/sbin/gemma-oom-protect
+Restart=on-failure
+RestartSec=5
+# Loading 6.3 GB with --no-mmap takes a while on a cold page cache.
+TimeoutStartSec=300
+
+# THE REAL FAILURE MODE (measured 2026-08-23). When a big model loads on the
+# GPUs it floods the page cache, the kernel reclaims Gemma's anonymous pages,
+# and Gemma is silently swapped out: 4.4 GB on disk, a 10-token reply timing
+# out after 5 minutes, while systemd still reported the service "active".
+#
+# LimitMEMLOCK below does NOT solve it -- a *user* service cannot raise its own
+# hard rlimit, so systemd clamps "infinity" to the session's 1.9 GB and
+# --load-mode mlock can only pin ~0.7 GB of the 7.9 GB of weights.
+#
+# MemorySwapMax=0 is what actually works: the memory controller is delegated to
+# this user slice, so the kernel is told this cgroup may never use swap at all.
+# MemoryLow reserves its working set against reclaim pressure.
+# Trade-off, deliberate: under genuine exhaustion Gemma is now OOM-killed and
+# restarted rather than silently thrashing. Loud beats silent.
+MemorySwapMax=0
+LimitMEMLOCK=infinity
+
+# THE SECOND FAILURE MODE (measured 2026-08-23). MemoryLow alone did not make
+# this service survivable, for two reasons:
+#
+#   1. MemoryLow is best-effort. The kernel reclaims below it once nothing
+#      else is reclaimable. MemoryMin is the hard guarantee -- memory below it
+#      is never reclaimed, so the working set cannot be paged out from under
+#      a reply that is mid-generation.
+#
+#   2. Ubuntu 24.04 runs systemd-oomd (active + enabled, oomd.conf says
+#      ManagedOOMMemoryPressure=kill). oomd kills whole cgroups by PSI
+#      pressure and IGNORES MemoryLow/MemoryMin entirely -- those are reclaim
+#      hints, not kill policy. The 6 GB dispatcher is the fattest cgroup under
+#      user.slice, so it was the natural victim the moment a browser pushed
+#      the machine into pressure. ManagedOOMPreference=avoid is what excludes
+#      it. NOTE: OOMScoreAdjust below does NOT take effect -- same trap as
+#      LimitMEMLOCK above. An unprivileged user manager may only RAISE
+#      oom_score_adj, never lower it, so systemd accepts -900 and the kernel
+#      clamps it at the inherited 100 (verify: cat /proc/$(pidof llama-server)/
+#      oom_score_adj). The working substitute is MemoryMax on the units that
+#      actually balloon (camofox), so global OOM is never reached at all.
+#
+# Net effect: under genuine exhaustion something else dies first -- a browser
+# tab, opencode -- and the assistant the user is talking to stays up.
+MemoryMin=6G
+MemoryLow=7G
+ManagedOOMPreference=avoid
+OOMScoreAdjust=-900
+
+[Install]
+WantedBy=default.target

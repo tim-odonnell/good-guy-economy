@@ -1,0 +1,13 @@
+# Scenarios (SCENARIO mode)
+
+Imagined-then-checked corruption scenarios — distinct from `theories/active.md`,
+which only holds theories already grounded in real corpus facts. Most entries
+here will end at STATUS: OPEN (structural conditions confirmed real, no direct
+evidence of exploitation yet) — that is a normal, valuable outcome, not a
+failure. See AGENTS.md "SCENARIO" mode for the format and process.
+
+Assignment (set {{CREATED_DATE}}):
+
+> {{TOPIC}}
+
+---

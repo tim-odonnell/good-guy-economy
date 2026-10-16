@@ -1,0 +1,7 @@
+[Unit]
+Description=Build the dated US-economy morning report (Good-Guy-Economy)
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/econ-report
+TimeoutStartSec=15min

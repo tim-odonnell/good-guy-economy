@@ -1,0 +1,6 @@
+[Unit]
+Description=Desktop notification: the US-economy morning report is ready
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/econ-report --notify

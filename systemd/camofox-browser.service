@@ -1,0 +1,32 @@
+# Not shipped by jo-inc/camofox-browser itself (it documents Docker or a bare
+# `npm start`) — authored here to match how the rest of Good-Guy-Economy's stack runs
+# as systemd --user services. Port 9377 and the healthcheck shape match what
+# control/config.py (CAMOFOX_HEALTH_URL) and gemma-dispatcher/tools.py expect.
+[Unit]
+Description=Camofox Browser — anti-detect browser server for Good-Guy-Economy's Collect mode
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/.local/share/camofox-browser
+# Direct node entrypoint (package.json's "start" script is just `node
+# server.js`) rather than `npm start` -- systemd --user units don't source
+# .bashrc/.profile, so PATH-dependent `npm`/`node` resolution is fragile
+# here. Both are actually under ~/.hermes/node on this machine (bundled by
+# the hermes-agent installer), not /usr/bin -- verify with `which node`.
+ExecStart=%h/.hermes/node/bin/node server.js
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=60
+
+# It pre-warms the Camoufox engine on startup (~190MB RSS observed) and
+# self-shuts it down to a ~40MB baseline 5 minutes after the last session
+# closes (BROWSER_IDLE_TIMEOUT_MS, default 300000) -- it's not a constant
+# heavyweight tax, just a warm-while-used one. MemoryMax here is a ceiling
+# against a stuck/zombie session during a long Collect run, not a sizing
+# target -- normal use should never approach it.
+MemoryMax=2G
+ManagedOOMPreference=avoid
+
+[Install]
+WantedBy=default.target

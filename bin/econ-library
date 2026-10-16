@@ -1,0 +1,370 @@
+#!/usr/bin/env python3
+"""econ-library — Good-Guy-Economy's local library of official US-economy documents (stdlib + pdftotext).
+
+  econ-library fetch            download new documents from the Fed, BLS, BEA and CBO, extract text, index
+  econ-library tidy             prune if the folder is over the tidy line (fetch does this too)
+  econ-library status           size, counts per source, newest documents
+  econ-library search WORDS     full-text search (SQLite FTS5), best passages first   [-n 5] [--src fed]
+
+Folder: ~/Good-Guy-Economy-Library (internal drive)
+  files/<src>/<kind>/<date>_<id>.<ext>   originals (PDF / HTML)
+  text/<src>/<kind>/<date>_<id>.txt      extracted text (what gets searched)
+  library.db                             catalogue + full-text index
+  library.log                            one line per download, skip, prune, error
+
+Space rules (user's choice, 2026-10-16): tidying starts at 3 GB, hard ceiling 6 GB.
+  Over 3 GB: prune down to 2.7 GB, in this order: originals of ordinary documents (oldest first, the
+  newest 3 of each kind are never touched) -> text of ordinary documents -> originals of keep-forever
+  documents (their text stays). Keep-forever text (FOMC statements/minutes/projections, Beige Books,
+  Monetary Policy Reports, CBO outlooks) is never deleted.
+  6 GB: nothing is written that would cross it; the run stops and logs it.
+
+Step 2 (2026-10-16): COLLECT's reading pack is filled first from documents here that were released
+since the last report (econ_lib.library_new); live feeds only fill the slots left.
+"""
+import fcntl
+import hashlib
+import html
+import json
+import os
+import re
+import sqlite3
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+from datetime import date, datetime
+from email.utils import parsedate_to_datetime
+from pathlib import Path
+
+sys.path.insert(0, str(Path.home() / ".hermes/scripts"))
+import econ_lib  # noqa: E402
+
+LIB = Path.home() / "Good-Guy-Economy-Library"
+DB = LIB / "library.db"
+LOG = LIB / "library.log"
+GB = 1024 ** 3
+TIDY_AT, TIDY_TO, HARD_CEILING = 3 * GB, int(2.7 * GB), 6 * GB
+MAX_FILE = 80 * 1024 ** 2  # no single official document is near this; guards against a runaway download
+KEEP_NEWEST = 3            # per (source, kind): never pruned
+PAUSE = 1.0                # seconds between requests: be polite to government servers
+UA = econ_lib.UA           # honest client name; BLS requires one, the Fed and BEA accept it
+TODAY = date.today()
+FED = "https://www.federalreserve.gov"
+SINCE = "2021-01-01"       # backfill horizon for the keep-forever Fed series
+BLS_CODES = {"empsit": "jobs report", "cpi": "CPI", "ppi": "PPI", "jolts": "job openings (JOLTS)",
+             "eci": "employment cost index", "realer": "real earnings"}
+BLS_KEEP = 24              # last two years of each monthly BLS release
+BEA_KINDS = [  # national releases only (the feed also carries county/state/territory GDP)
+    (re.compile(r"^(GDP\b|Gross Domestic Product,)", re.I), "gdp"),
+    (re.compile(r"^Personal Income and Outlays", re.I), "personal-income-outlays"),
+    (re.compile(r"^U\.S\. International Trade in Goods and Services", re.I), "trade"),
+    (re.compile(r"^U\.S\. International Transactions", re.I), "international-transactions"),
+]
+BEA_SKIP = re.compile(r"\b(by (county|state|metro|industry)|for (the |guam|puerto|american|u\.s\. virgin))", re.I)
+BEA_YEARS = 2
+CBO_WANT = re.compile(r"budget and economic outlook|long-term budget|monthly budget review|update to the budget|"
+                      r"economic outlook|deficit|federal debt|analysis of the president", re.I)
+CBO_FOREVER = re.compile(r"outlook", re.I)
+
+
+def log(msg):
+    LIB.mkdir(exist_ok=True)
+    with open(LOG, "a") as f:
+        f.write(f"{datetime.now():%Y-%m-%d %H:%M:%S} {msg}\n")
+
+
+def fetch_bytes(url, timeout=60):
+    """Raw bytes. Same client-name order as econ_lib.get (honest name first, Python's default second)."""
+    last = None
+    for ua in (UA, None):
+        headers = {"Accept": "*/*"}
+        if ua:
+            headers["User-Agent"] = ua
+        try:
+            with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=timeout) as r:
+                n = int(r.headers.get("Content-Length") or 0)
+                if n > MAX_FILE:
+                    raise ValueError(f"too large ({n} bytes)")
+                data = r.read(MAX_FILE + 1)
+                if len(data) > MAX_FILE:
+                    raise ValueError("too large")
+                return data
+        except urllib.error.HTTPError as e:
+            last = e
+            if e.code == 404:
+                break
+        except Exception as e:
+            last = e
+    raise last
+
+
+def page(url):
+    time.sleep(PAUSE)
+    return fetch_bytes(url).decode("utf-8", "replace")
+
+
+def mdy(s):  # BLS archive names use MMDDYYYY
+    return f"{s[4:]}-{s[:2]}-{s[2:4]}"
+
+
+def ymd(s):
+    return f"{s[:4]}-{s[4:6]}-{s[6:]}"
+
+
+# ---------------------------------------------------------------- what to collect
+def fed_docs():
+    out = []
+    cal = page(f"{FED}/monetarypolicy/fomccalendars.htm")
+    for pat, kind, title in [(r"/newsevents/pressreleases/monetary(\d{8})a\.htm", "fomc-statement", "FOMC statement"),
+                             (r"/monetarypolicy/fomcminutes(\d{8})\.htm", "fomc-minutes", "Minutes of the FOMC meeting"),
+                             (r"/monetarypolicy/fomcprojtabl(\d{8})\.htm", "fomc-projections", "FOMC economic projections")]:
+        for d in sorted(set(re.findall(pat, cal))):
+            if ymd(d) >= SINCE:
+                out.append(dict(src="fed", kind=kind, date=ymd(d), title=f"{title}, {ymd(d)}", keep=1,
+                                url=FED + pat.replace(r"(\d{8})", d).replace("\\", "")))
+    bb = page(f"{FED}/monetarypolicy/beige-book-default.htm")
+    for d in sorted(set(re.findall(r"BeigeBook_(\d{8})\.pdf", bb))):
+        out.append(dict(src="fed", kind="beige-book", date=ymd(d), title=f"Beige Book, {ymd(d)}", keep=1,
+                        url=f"{FED}/monetarypolicy/files/BeigeBook_{d}.pdf"))
+    mpr = page(f"{FED}/monetarypolicy/publications/mpr_default.htm")
+    for path, d in sorted(set(re.findall(r'href="((?:https://www\.federalreserve\.gov)?/[a-z/]+/files/(\d{8})_mprfullreport\.pdf)"', mpr))):
+        if ymd(d) >= SINCE:
+            out.append(dict(src="fed", kind="monetary-policy-report", date=ymd(d), title=f"Monetary Policy Report, {ymd(d)}",
+                            keep=1, url=path if path.startswith("http") else FED + path))
+    return out
+
+
+def bls_docs():
+    out = []
+    for code, name in BLS_CODES.items():
+        idx = page(f"https://www.bls.gov/bls/news-release/{code}.htm")
+        found = {}
+        for d, ext in re.findall(rf"/news\.release/archives/{code}_(\d{{8}})\.(htm|pdf)", idx):
+            if mdy(d) <= TODAY.isoformat() and (d not in found or ext == "htm"):  # skip future placeholders; prefer HTML
+                found[d] = ext
+        for d in sorted(found, key=mdy)[-BLS_KEEP:]:
+            out.append(dict(src="bls", kind=code, date=mdy(d), title=f"BLS {name}, released {mdy(d)}", keep=0,
+                            url=f"https://www.bls.gov/news.release/archives/{code}_{d}.{found[d]}"))
+    return out
+
+
+def rss_items(raw):
+    for it in re.findall(r"<item\b.*?</item>", raw, re.S):
+        def f(tag):
+            m = re.search(rf"<{tag}>(.*?)</{tag}>", it, re.S)
+            return html.unescape(re.sub(r"<!\[CDATA\[|\]\]>", "", m.group(1))).strip() if m else ""
+        try:
+            d = parsedate_to_datetime(f("pubDate")).date().isoformat()
+        except Exception:
+            d = TODAY.isoformat()
+        yield f("title"), f("link"), d, f("description")
+
+
+def bea_docs():
+    out = []
+    for title, link, d, _ in rss_items(page("https://apps.bea.gov/rss/rss.xml")):
+        kind = next((k for rx, k in BEA_KINDS if rx.search(title)), None)
+        if kind and link and not BEA_SKIP.search(title) and d >= f"{TODAY.year - BEA_YEARS}{TODAY.isoformat()[4:]}":
+            link = link if link.startswith("http") else "https://" + link.lstrip("/")
+            out.append(dict(src="bea", kind=kind, date=d, title=title, keep=0, url=link, bea_page=True))
+    return out
+
+
+def cbo_docs():
+    """cbo.gov blocks scripts (403), so keep what its RSS feed carries: title + summary."""
+    out = []
+    for title, link, d, desc in rss_items(page("https://www.cbo.gov/publications/all/rss.xml")):
+        if CBO_WANT.search(title) and not re.match(r"^(H\.R\.|S\.|H\.J\.|S\.J\.|H\. ?Res|S\. ?Res)\s?\d", title):
+            text = econ_lib._econ_fetch_module().html_to_text(f"<p>{desc}</p>")[1] if desc else ""
+            out.append(dict(src="cbo", kind="publication", date=d, title=title, keep=1 if CBO_FOREVER.search(title) else 0,
+                            url=link, text=f"{title}\nSOURCE: {link}\nDATE: {d}\n\n{text}"))
+    return out
+
+
+COLLECTORS = [("fed", fed_docs), ("bls", bls_docs), ("bea", bea_docs), ("cbo", cbo_docs)]
+
+
+# ---------------------------------------------------------------- storage
+def db():
+    LIB.mkdir(exist_ok=True)
+    c = sqlite3.connect(DB)
+    c.execute("""CREATE TABLE IF NOT EXISTS docs (id TEXT PRIMARY KEY, src TEXT, kind TEXT, date TEXT, title TEXT,
+                 url TEXT UNIQUE, file TEXT, textfile TEXT, bytes INTEGER, keep INTEGER, added TEXT, original_pruned INTEGER DEFAULT 0)""")
+    c.execute("CREATE VIRTUAL TABLE IF NOT EXISTS fts USING fts5(title, body, id UNINDEXED, tokenize='porter unicode61')")
+    return c
+
+
+def folder_size():
+    return sum(p.stat().st_size for p in LIB.rglob("*") if p.is_file())
+
+
+def to_text(data, ext):
+    if ext == "pdf":
+        r = subprocess.run(["pdftotext", "-enc", "UTF-8", "-", "-"], input=data, capture_output=True, timeout=180)
+        return r.stdout.decode("utf-8", "replace")
+    title, text, _ = econ_lib._econ_fetch_module().html_to_text(data.decode("utf-8", "replace"))
+    return f"{title}\n\n{text}"
+
+
+def store(c, doc):
+    """Download one document, keep the original + its text, index it. Returns bytes written."""
+    url = doc["url"]
+    if doc.get("bea_page"):  # BEA: the release PDF (full text) if the news page links one, else the page itself
+        raw = page(url)
+        pdf = next((p for p in re.findall(r'href="(/sites/default/files/\d{4}-\d{2}/[^"]+\.pdf)"', raw) if "hist" not in p), None)
+        data, ext = (None, "pdf") if pdf else (raw.encode(), "html")
+        if pdf:
+            time.sleep(PAUSE)
+            data = fetch_bytes("https://www.bea.gov" + pdf)
+    elif "text" in doc:
+        data, ext = None, "txt"
+    else:
+        time.sleep(PAUSE)
+        data = fetch_bytes(url)
+        ext = "pdf" if data[:5] == b"%PDF-" else "html"
+    text = doc["text"] if "text" in doc else to_text(data, ext)
+    if len(text.strip()) < 200:
+        raise ValueError("no usable text extracted")
+    new = (len(data) if data else 0) + len(text.encode()) * 2  # the text is stored once as a file and once in the index
+    if folder_size() + new > HARD_CEILING:
+        raise OverflowError("6 GB hard ceiling would be crossed")
+    did = hashlib.sha1(url.encode()).hexdigest()[:10]
+    stem = f"{doc['src']}/{doc['kind']}/{doc['date']}_{did}"
+    f = None
+    if data:
+        f = LIB / "files" / f"{stem}.{ext}"
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_bytes(data)
+    t = LIB / "text" / f"{stem}.txt"
+    t.parent.mkdir(parents=True, exist_ok=True)
+    t.write_text(text)
+    c.execute("INSERT INTO docs VALUES (?,?,?,?,?,?,?,?,?,?,?,0)",
+              (did, doc["src"], doc["kind"], doc["date"], doc["title"], url, str(f.relative_to(LIB)) if f else None,
+               str(t.relative_to(LIB)), new, doc["keep"], datetime.now().isoformat(timespec="seconds")))
+    c.execute("INSERT INTO fts (title, body, id) VALUES (?,?,?)", (doc["title"], text, did))
+    c.commit()
+    return new
+
+
+def fetch(limit=None):
+    c = db()
+    have = {r[0] for r in c.execute("SELECT url FROM docs")}
+    got = skipped = failed = 0
+    for name, fn in COLLECTORS:
+        try:
+            docs = fn()
+        except Exception as e:
+            log(f"ERROR listing {name}: {type(e).__name__}: {e}")
+            failed += 1
+            continue
+        for doc in sorted((d for d in docs if d["url"] not in have), key=lambda d: d["date"], reverse=True):
+            if limit is not None and got >= limit:
+                break
+            try:
+                n = store(c, doc)
+                have.add(doc["url"])
+                got += 1
+                log(f"saved {doc['src']}/{doc['kind']} {doc['date']} {doc['title'][:70]} ({n // 1024} KB)")
+            except OverflowError as e:
+                log(f"STOP: {e}; not saved: {doc['url']}")
+                print(f"Stopped: {e}.")
+                return got, skipped, failed
+            except Exception as e:
+                failed += 1
+                log(f"failed {doc['url']}: {type(e).__name__}: {e}")
+        if folder_size() > TIDY_AT:
+            tidy(c)
+    tidy(c)
+    return got, skipped, failed
+
+
+def tidy(c=None):
+    c = c or db()
+    size = folder_size()
+    if size <= TIDY_AT:
+        return
+    log(f"tidy: {size / GB:.2f} GB is over the 3 GB line; pruning to {TIDY_TO / GB:.1f} GB")
+    protected = set()
+    for (src, kind) in c.execute("SELECT DISTINCT src, kind FROM docs").fetchall():
+        protected |= {r[0] for r in c.execute("SELECT id FROM docs WHERE src=? AND kind=? ORDER BY date DESC LIMIT ?", (src, kind, KEEP_NEWEST))}
+    stages = [("originals of ordinary documents", "keep=0 AND file IS NOT NULL AND original_pruned=0", "original"),
+              ("text of ordinary documents", "keep=0", "all"),
+              ("originals of keep-forever documents", "keep=1 AND file IS NOT NULL AND original_pruned=0", "original")]
+    for label, where, what in stages:
+        for did, f, t in c.execute(f"SELECT id, file, textfile FROM docs WHERE {where} ORDER BY date ASC").fetchall():
+            if size <= TIDY_TO:
+                break
+            if did in protected:
+                continue
+            if f and (LIB / f).exists():
+                size -= (LIB / f).stat().st_size
+                (LIB / f).unlink()
+            if what == "original":
+                c.execute("UPDATE docs SET original_pruned=1 WHERE id=?", (did,))
+            else:
+                if t and (LIB / t).exists():
+                    size -= 2 * (LIB / t).stat().st_size  # the text file + its copy in the search index
+                    (LIB / t).unlink()
+                c.execute("DELETE FROM fts WHERE id=?", (did,))
+                c.execute("DELETE FROM docs WHERE id=?", (did,))
+            log(f"tidy: removed {label[:-1] if what == 'all' else 'original'} {did}")
+        c.commit()
+    c.execute("VACUUM")
+    log(f"tidy: done, {folder_size() / GB:.2f} GB")
+
+
+def status():
+    c = db()
+    print(f"{LIB}  {folder_size() / 1024 ** 2:,.0f} MB used  (tidy at 3 GB, hard ceiling 6 GB)")
+    for src, kind, n, newest in c.execute("SELECT src, kind, COUNT(*), MAX(date) FROM docs GROUP BY src, kind ORDER BY src, kind"):
+        print(f"  {src:4} {kind:26} {n:4} docs, newest {newest}")
+    print("Latest additions:")
+    for d, t, a in c.execute("SELECT date, title, added FROM docs ORDER BY added DESC LIMIT 5"):
+        print(f"  {d}  {t[:80]}  (added {a})")
+
+
+def search(words, n=5, src=None):
+    c = db()
+    q = " ".join(f'"{w}"' for w in re.findall(r"[\w'-]+", words))  # quoted terms: no FTS syntax surprises
+    sql = ("SELECT d.date, d.src, d.title, d.url, snippet(fts, 1, '[', ']', ' … ', 40) FROM fts JOIN docs d ON d.id = fts.id "
+           "WHERE fts MATCH ?" + (" AND d.src = ?" if src else "") + " ORDER BY bm25(fts, 5.0, 1.0) LIMIT ?")
+    rows = c.execute(sql, (q, src, n) if src else (q, n)).fetchall()
+    for d, s, t, u, snip in rows:
+        print(f"\n{d} [{s}] {t}\n{u}\n  {' '.join(snip.split())}")
+    if not rows:
+        print("no matches")
+
+
+def main():
+    a = sys.argv[1:]
+    cmd = a[0] if a else "status"
+    LIB.mkdir(exist_ok=True)
+    with open(LIB / ".lock", "w") as lk:
+        try:
+            fcntl.flock(lk, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            if cmd in ("fetch", "tidy"):
+                sys.exit("econ-library is already running")
+        if cmd == "fetch":
+            lim = int(a[a.index("--max") + 1]) if "--max" in a else None
+            got, _, failed = fetch(lim)
+            msg = f"fetch done: {got} new, {failed} failed, {folder_size() / 1024 ** 2:,.0f} MB"
+            log(msg)
+            print(msg)
+        elif cmd == "tidy":
+            tidy()
+        elif cmd == "status":
+            status()
+        elif cmd == "search":
+            n = int(a[a.index("-n") + 1]) if "-n" in a else 5
+            src = a[a.index("--src") + 1] if "--src" in a else None
+            words = " ".join(w for i, w in enumerate(a[1:], 1) if w not in ("-n", "--src") and a[i - 1] not in ("-n", "--src"))
+            search(words, n, src)
+        else:
+            print(__doc__)
+
+
+if __name__ == "__main__":
+    main()

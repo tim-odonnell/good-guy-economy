@@ -1,0 +1,9 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Good-Guy-Economy Guide
+Comment=How to use Good-Guy-Economy
+Exec=xdg-open "/home/user/good-guy-economy/docs/Good-Guy-Economy-Guide.md"
+Icon=/home/user/.local/share/icons/good-guy-economy/good-guy-economy-guide.svg
+Terminal=false
+Categories=Utility;Documentation;

@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# Launched by the "Gemma" desktop icon. Brings up the model and the chat
+# window that can actually operate the machine, then opens it.
+set -u
+UI_PORT=8097
+MODEL_PORT=$(grep -E '^GEMMA_PORT=' "$HOME/.config/gemma-dispatcher/model.env" 2>/dev/null | cut -d= -f2)
+MODEL_PORT=${MODEL_PORT:-8098}
+
+if ! curl -sf --max-time 1 "http://127.0.0.1:$MODEL_PORT/health" >/dev/null 2>&1; then
+    notify-send -a "Gemma" "Starting Gemma…" \
+        "Loading the model — about a minute on a cold start." 2>/dev/null
+    systemctl --user start gemma-dispatcher.service
+fi
+systemctl --user start gemma-dispatch-ui.service
+
+for i in $(seq 1 300); do
+    if curl -sf --max-time 1 "http://127.0.0.1:$MODEL_PORT/health" >/dev/null 2>&1 \
+       && curl -sf --max-time 1 "http://127.0.0.1:$UI_PORT/api/health" >/dev/null 2>&1; then
+        xdg-open "http://127.0.0.1:$UI_PORT/" >/dev/null 2>&1 &
+        exit 0
+    fi
+    systemctl --user is-active --quiet gemma-dispatcher.service || break
+    sleep 1
+done
+
+notify-send -a "Gemma" -u critical "Gemma couldn't start" \
+    "Check: systemctl --user status gemma-dispatcher gemma-dispatch-ui" 2>/dev/null
+exit 1

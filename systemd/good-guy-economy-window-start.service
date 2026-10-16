@@ -1,0 +1,8 @@
+[Unit]
+Description=Good-Guy-Economy — start stack + investigation loop for the nightly active window
+
+[Service]
+Type=oneshot
+ExecStartPre=-/usr/bin/systemctl --user start good-guy-economy-window-awake.service
+ExecStart=/usr/bin/curl -sS -X POST http://127.0.0.1:8420/api/stack/start
+ExecStart=/usr/bin/curl -sS -X POST http://127.0.0.1:8420/api/gateway/start

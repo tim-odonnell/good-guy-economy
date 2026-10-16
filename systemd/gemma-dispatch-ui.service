@@ -1,0 +1,20 @@
+[Unit]
+Description=Gemma Dispatcher UI — chat window with tools that operate this machine
+After=network.target good-guy-economy-llm.service
+Wants=good-guy-economy-llm.service
+
+[Service]
+Type=simple
+WorkingDirectory=%h/.local/share/gemma-dispatch
+ExecStart=%h/.hermes/hermes-agent/venv/bin/python -m uvicorn app:app --host 127.0.0.1 --port 8097
+Restart=on-failure
+RestartSec=5
+
+# The chat window IS "Gemma" from the user's point of view -- if this dies the
+# window goes blank even though the model is still up. Tiny (~3 MB), so
+# excluding it from OOM costs nothing.
+ManagedOOMPreference=avoid
+OOMScoreAdjust=-800
+
+[Install]
+WantedBy=default.target

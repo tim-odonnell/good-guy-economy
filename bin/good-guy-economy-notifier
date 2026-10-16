@@ -1,0 +1,130 @@
+#!/usr/bin/env python3
+"""Good-Guy-Economy notifier — watches HIGHLIGHTS.md and alerts on new entries.
+
+Fires BOTH a desktop notification (notify-send) and a Telegram message for each
+new highlight line the agent appends. Telegram is optional: if the token/chat
+id aren't configured in ~/.hermes/.env it's silently skipped (desktop still
+works). Runs as the `good-guy-economy-notifier` systemd --user service.
+"""
+import hashlib
+import json
+import subprocess
+import time
+import urllib.parse
+import urllib.request
+from pathlib import Path
+
+def _read_kv_file(path: Path) -> dict:
+    """Parse KEY=VALUE lines from a simple env-style file."""
+    out = {}
+    try:
+        for line in path.read_text().splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            out[k.strip()] = v.strip().strip('"').strip("'")
+    except Exception:
+        pass
+    return out
+
+
+def read_env() -> dict:
+    """Parse KEY=VALUE lines from ~/.hermes/.env."""
+    return _read_kv_file(Path.home() / ".hermes/.env")
+
+
+_PATHS = _read_kv_file(Path.home() / ".config/good-guy-economy/paths.env")
+BASE = Path(_PATHS.get(
+    "GOOD_GUY_ECONOMY_INVESTIGATION_DIR",
+    str(Path.home() / ".hermes/investigations/active"),
+))
+HIGHLIGHTS = BASE / "HIGHLIGHTS.md"
+STATE = BASE / ".notifier_state.json"
+POLL_SECONDS = 20
+
+
+def highlight_lines() -> list[str]:
+    """Return the highlight bullet lines from HIGHLIGHTS.md (lines starting '- ')."""
+    try:
+        return [
+            ln.strip()
+            for ln in HIGHLIGHTS.read_text().splitlines()
+            if ln.strip().startswith("- ")
+        ]
+    except Exception:
+        return []
+
+
+def _h(line: str) -> str:
+    return hashlib.sha1(line.encode("utf-8")).hexdigest()
+
+
+def seen_hashes() -> set:
+    try:
+        return set(json.loads(STATE.read_text()).get("seen", []))
+    except Exception:
+        return set()
+
+
+def save_hashes(hashes: set) -> None:
+    try:
+        STATE.write_text(json.dumps({"seen": sorted(hashes)}))
+    except Exception:
+        pass
+
+
+def desktop_notify(title: str, body: str) -> None:
+    try:
+        subprocess.run(
+            ["notify-send", "-u", "critical", "-a", "Good-Guy-Economy", "-i", "dialog-information",
+             title, body],
+            timeout=10,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+    except Exception:
+        pass
+
+
+def telegram_send(text: str, env: dict) -> None:
+    token = env.get("TELEGRAM_BOT_TOKEN")
+    chat = env.get("TELEGRAM_CHAT_ID")
+    if not token or not chat:
+        return
+    try:
+        data = urllib.parse.urlencode({
+            "chat_id": chat,
+            "text": text,
+            "disable_web_page_preview": "true",
+        }).encode()
+        urllib.request.urlopen(
+            f"https://api.telegram.org/bot{token}/sendMessage",
+            data=data, timeout=15,
+        )
+    except Exception:
+        pass
+
+
+def main() -> None:
+    # On first ever start, mark existing lines as already-seen so we don't
+    # replay history when the service first comes up.
+    if not STATE.exists():
+        save_hashes({_h(ln) for ln in highlight_lines()})
+
+    while True:
+        lines = highlight_lines()
+        seen = seen_hashes()
+        new = [ln for ln in lines if _h(ln) not in seen]
+        if new:
+            env = read_env()
+            for raw in new:
+                text = raw.lstrip("-").strip()
+                desktop_notify("🔎 Good-Guy-Economy — noteworthy", text)
+                telegram_send(f"🔎 Good-Guy-Economy flagged something:\n\n{text}", env)
+                seen.add(_h(raw))
+            save_hashes(seen)
+        time.sleep(POLL_SECONDS)
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+systemctl --user stop gemma-dispatch-ui.service
+systemctl --user stop gemma-dispatcher.service
+notify-send -a "Gemma" "Gemma stopped" "Memory released." 2>/dev/null

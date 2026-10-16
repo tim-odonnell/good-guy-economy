@@ -1,0 +1,103 @@
+#!/usr/bin/env python3
+"""One-shot Telegram setup for Good-Guy-Economy alerts.
+
+Usage:
+    good-guy-economy-telegram-setup <BOT_TOKEN>
+
+Before running: create a bot with @BotFather in Telegram, then send your new
+bot any message (e.g. "hi") so it can find your chat id.
+
+This finds your chat id from the bot's recent updates, writes TELEGRAM_BOT_TOKEN
+and TELEGRAM_CHAT_ID into ~/.hermes/.env, sends a test message, and restarts the
+notifier service.
+"""
+import json
+import subprocess
+import sys
+import urllib.request
+from pathlib import Path
+
+ENV_FILE = Path.home() / ".hermes/.env"
+
+
+def api(token: str, method: str) -> dict:
+    with urllib.request.urlopen(
+        f"https://api.telegram.org/bot{token}/{method}", timeout=15
+    ) as r:
+        return json.loads(r.read().decode())
+
+
+def set_env(key: str, value: str) -> None:
+    lines = ENV_FILE.read_text().splitlines() if ENV_FILE.exists() else []
+    out, found = [], False
+    for ln in lines:
+        if ln.strip().startswith(f"{key}="):
+            out.append(f"{key}={value}")
+            found = True
+        else:
+            out.append(ln)
+    if not found:
+        out.append(f"{key}={value}")
+    ENV_FILE.write_text("\n".join(out) + "\n")
+
+
+def main() -> int:
+    if len(sys.argv) != 2:
+        print(__doc__)
+        return 2
+    token = sys.argv[1].strip()
+
+    try:
+        me = api(token, "getMe")
+    except Exception as e:
+        print(f"✗ Could not reach Telegram with that token: {e}")
+        return 1
+    if not me.get("ok"):
+        print("✗ Invalid bot token.")
+        return 1
+    bot = me["result"]["username"]
+    print(f"✓ Bot @{bot} reachable.")
+
+    updates = api(token, "getUpdates")
+    chats = {}
+    for u in updates.get("result", []):
+        msg = u.get("message") or u.get("edited_message") or {}
+        chat = msg.get("chat") or {}
+        if chat.get("id"):
+            name = chat.get("username") or chat.get("first_name") or str(chat["id"])
+            chats[chat["id"]] = name
+    if not chats:
+        print(f"✗ No messages found. Open Telegram, send @{bot} any message, then re-run.")
+        return 1
+
+    if len(chats) == 1:
+        chat_id = next(iter(chats))
+    else:
+        print("Multiple chats found:")
+        for i, (cid, name) in enumerate(chats.items(), 1):
+            print(f"  {i}. {name} ({cid})")
+        pick = input("Pick number: ").strip()
+        chat_id = list(chats)[int(pick) - 1]
+
+    set_env("TELEGRAM_BOT_TOKEN", token)
+    set_env("TELEGRAM_CHAT_ID", str(chat_id))
+    print(f"✓ Saved TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID (chat {chat_id}) to ~/.hermes/.env")
+
+    # test message
+    try:
+        import urllib.parse
+        data = urllib.parse.urlencode(
+            {"chat_id": chat_id, "text": "✅ Good-Guy-Economy alerts are connected. You'll get a message here when something noteworthy is found."}
+        ).encode()
+        urllib.request.urlopen(f"https://api.telegram.org/bot{token}/sendMessage", data=data, timeout=15)
+        print("✓ Test message sent — check Telegram.")
+    except Exception as e:
+        print(f"⚠ Saved, but test message failed: {e}")
+
+    subprocess.run(["systemctl", "--user", "restart", "good-guy-economy-notifier"], check=False)
+    print("✓ Notifier restarted. Setup complete.")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

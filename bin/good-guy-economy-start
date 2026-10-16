@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# START the Good-Guy-Economy agent: engine + browser first, then the gateway/scheduler.
+# Mirrors the START-STOP-RUNBOOK. Safe to run even if some are already up.
+set -u
+
+echo "==============================================="
+echo "  ▶️  Starting Good-Guy-Economy agent"
+echo "==============================================="
+echo
+
+echo "[1/3] Starting the model engine + browser..."
+systemctl --user start good-guy-economy-llm.service
+systemctl --user start camofox-browser.service
+systemctl --user start good-guy-economy-notifier.service
+systemctl --user start good-guy-economy-diskwatch.service
+
+echo "[2/3] Waiting for the model to load on :8099 (10s-2min)..."
+for i in $(seq 1 60); do
+  if curl -s --max-time 2 http://127.0.0.1:8099/health 2>/dev/null | grep -q '"status":"ok"'; then
+    echo "      model engine is UP."
+    break
+  fi
+  printf "      still loading... (%ds)\r" "$((i*2))"
+  sleep 2
+done
+echo
+
+echo "[3/3] Starting the gateway + cron scheduler (the master switch)..."
+systemctl --user start hermes-gateway.service
+sleep 2
+echo
+
+echo "-----------------------------------------------"
+echo "  Health check"
+echo "-----------------------------------------------"
+for s in good-guy-economy-llm camofox-browser hermes-gateway good-guy-economy-notifier good-guy-economy-diskwatch; do
+  printf "  %-18s %s\n" "$s" "$(systemctl --user is-active $s.service)"
+done
+echo -n "  llama  :8099   "; curl -s --max-time 3 http://127.0.0.1:8099/health ; echo
+echo -n "  camofox:9377   "; curl -s --max-time 3 http://localhost:9377/health ; echo
+echo
+hermes cron status 2>/dev/null | grep -i 'Gateway\|Next run' || echo "  (run 'hermes cron status' to see next scheduled run)"
+echo
+echo "  ✅ Done. If everything above says 'active', Good-Guy-Economy is running."
+echo
+echo "[press Enter to close]"
+read -r

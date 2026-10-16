@@ -1,0 +1,12 @@
+[Unit]
+Description=Good-Guy-Economy library: fetch new official documents daily at 00:20 (before the 01:05 COLLECT stage)
+
+[Timer]
+OnCalendar=*-*-* 00:20:00
+# Persistent on purpose (unlike the report timers): it only downloads documents, so catching up
+# at boot after a night off is wanted - the next real night then has them on hand.
+Persistent=true
+RandomizedDelaySec=5min
+
+[Install]
+WantedBy=timers.target

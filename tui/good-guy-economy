@@ -1,0 +1,720 @@
+#!/usr/bin/env python3
+"""Good-Guy-Economy Command Center — dev/debug TUI for the current investigation"""
+
+import json
+import os
+import re
+import subprocess
+import threading
+from datetime import datetime
+from pathlib import Path
+
+from textual.app import App, ComposeResult
+from textual.binding import Binding
+from textual.containers import Container, Horizontal, Vertical, ScrollableContainer
+from textual.css.query import NoMatches
+from textual.reactive import reactive
+from textual.widgets import (
+    Button, Footer, Header, Input, Label, ListItem, ListView,
+    RichLog, Static, TabbedContent, TabPane,
+)
+
+def _load_env_file(path: Path) -> dict:
+    out = {}
+    try:
+        for line in path.read_text().splitlines():
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                k, v = line.split("=", 1)
+                out[k.strip()] = v.strip().strip('"').strip("'")
+    except Exception:
+        pass
+    return out
+
+
+_PATHS = _load_env_file(Path.home() / ".config/good-guy-economy/paths.env")
+INVESTIGATION_DIR = Path(_PATHS.get(
+    "GOOD_GUY_ECONOMY_INVESTIGATION_DIR",
+    str(Path.home() / ".hermes/investigations/active"),
+))
+AGENT_LOG = Path.home() / ".hermes/logs/agent.log"
+JOBS_FILE = Path.home() / ".hermes/cron/jobs.json"
+
+# The 3-loop discovery system (rebuilt 2026-07-15). Looked up by name, not id,
+# since ids get regenerated if the jobs are ever rebuilt again.
+JOB_NAMES = ["good-guy-economy-collect", "good-guy-economy-brainstorm", "good-guy-economy-scenario", "good-guy-economy-refine"]
+JOB_LABELS = {"good-guy-economy-collect": "Collect", "good-guy-economy-brainstorm": "Brainstorm", "good-guy-economy-scenario": "Scenario", "good-guy-economy-refine": "Refine"}
+JOB_KEYS = {"good-guy-economy-collect": "c", "good-guy-economy-brainstorm": "b", "good-guy-economy-scenario": "v", "good-guy-economy-refine": "f"}
+
+# The systemd --user services that make up the whole stack. good-guy-economy-llm and
+# camofox-browser must be up before hermes-gateway can do useful work, so they
+# start first.
+STACK_SERVICES = [
+    "good-guy-economy-llm",
+    "camofox-browser",
+    "hermes-gateway",
+    "good-guy-economy-notifier",
+    "good-guy-economy-diskwatch",
+]
+
+CAMOFOX_URL = os.getenv("CAMOFOX_URL", "http://localhost:9377").rstrip("/")
+# noVNC live view (served by the camofox vnc plugin on port 6080)
+NOVNC_PORT = 6080
+NOVNC_URL = f"http://localhost:{NOVNC_PORT}/vnc.html?autoconnect=1&resize=scale"
+
+
+def camofox_health() -> dict:
+    """Return the camofox /health JSON, or {} if unreachable."""
+    import urllib.request
+    try:
+        with urllib.request.urlopen(f"{CAMOFOX_URL}/health", timeout=3) as r:
+            return json.loads(r.read().decode())
+    except Exception:
+        return {}
+
+
+def novnc_up() -> bool:
+    import urllib.request
+    try:
+        with urllib.request.urlopen(f"http://localhost:{NOVNC_PORT}/", timeout=2) as r:
+            return r.status == 200
+    except Exception:
+        return False
+
+
+HIGHLIGHTS_FILE = INVESTIGATION_DIR / "HIGHLIGHTS.md"
+
+
+def highlights() -> list[str]:
+    """Return the highlight bullet lines (most recent last)."""
+    try:
+        return [
+            ln.strip().lstrip("-").strip()
+            for ln in HIGHLIGHTS_FILE.read_text().splitlines()
+            if ln.strip().startswith("- ")
+        ]
+    except Exception:
+        return []
+
+
+def load_jobs() -> dict[str, dict]:
+    """Return the 3 good-guy-economy jobs keyed by name (only those found)."""
+    out: dict[str, dict] = {}
+    try:
+        data = json.loads(JOBS_FILE.read_text())
+        by_name = {j["name"]: j for j in data.get("jobs", [])}
+        for name in JOB_NAMES:
+            if name in by_name:
+                out[name] = by_name[name]
+    except Exception:
+        pass
+    return out
+
+
+def stack_status() -> dict[str, str]:
+    """systemd --user is-active for each stack service, best-effort."""
+    out = {}
+    for svc in STACK_SERVICES:
+        try:
+            r = subprocess.run(
+                ["systemctl", "--user", "is-active", f"{svc}.service"],
+                capture_output=True, text=True, timeout=3,
+            )
+            out[svc] = r.stdout.strip() or "unknown"
+        except Exception:
+            out[svc] = "unknown"
+    return out
+
+
+def stack_running() -> bool:
+    return stack_status().get("hermes-gateway") == "active"
+
+
+def fmt_dt(iso: str | None) -> str:
+    if not iso:
+        return "—"
+    try:
+        dt = datetime.fromisoformat(iso)
+        return dt.strftime("%b %d %H:%M")
+    except Exception:
+        return iso[:16]
+
+
+def list_reports() -> list[Path]:
+    try:
+        return sorted(
+            INVESTIGATION_DIR.glob("findings-*.md"),
+            reverse=True
+        )
+    except Exception:
+        return []
+
+
+class StatusPanel(Static):
+    CSS = ""
+
+    def compose(self) -> ComposeResult:
+        yield Label("", id="status-body")
+
+    def refresh_status(self) -> None:
+        running = stack_running()
+        stack_color = "green" if running else "red"
+        stack_word = "RUNNING" if running else "STOPPED"
+        body = (
+            f"[bold cyan]GOOD-GUY-ECONOMY[/bold cyan]\n"
+            f"[dim]Investigation Dev Console[/dim]\n\n"
+            f"[bold]Stack[/bold]  [{stack_color}]● {stack_word}[/{stack_color}]\n"
+        )
+
+        jobs = load_jobs()
+        if not jobs:
+            body += "\n[dim]No job data[/dim]\n"
+        else:
+            state_color = {
+                "scheduled": "green", "running": "yellow",
+                "error": "red", "paused": "dim",
+            }
+            ok_color = {"ok": "green", "error": "red"}
+            for name in JOB_NAMES:
+                job = jobs.get(name)
+                label = JOB_LABELS[name]
+                if not job:
+                    body += f"\n[bold]{label}[/bold]  [dim]missing[/dim]\n"
+                    continue
+                state = job.get("state", "?")
+                last_status = job.get("last_status", "?")
+                sc = state_color.get(state, "white")
+                oc = ok_color.get(last_status, "yellow")
+                body += (
+                    f"\n[bold]{label}[/bold] [{JOB_KEYS[name]}]\n"
+                    f"  [{sc}]{state}[/{sc}]  last:[{oc}]{last_status}[/{oc}]\n"
+                    f"  next: {fmt_dt(job.get('next_run_at'))}\n"
+                )
+
+        reports = len(list_reports())
+        body += f"\n[bold]Reports[/bold] {reports}\n"
+
+        hl = highlights()
+        if hl:
+            body += (
+                f"\n[bold yellow]🔔 Highlights: {len(hl)}[/bold yellow]\n"
+                f"[dim]{hl[-1][:34]}…[/dim]\n"
+            )
+        errored = [
+            (JOB_LABELS[n], j.get("last_error", ""))
+            for n, j in jobs.items()
+            if j.get("last_status") == "error" and j.get("last_error")
+        ]
+        for label, err in errored[:1]:
+            body += f"\n[dim red]⚠ {label}: {err[:70].strip()}[/dim red]"
+
+        try:
+            self.query_one("#status-body", Label).update(body)
+        except NoMatches:
+            pass
+
+
+class LiveLog(RichLog):
+    """Auto-tailing view of the agent log, filtered to this job."""
+
+    _log_pos: int = 0
+
+    def on_mount(self) -> None:
+        self.set_interval(2, self._poll_log)
+        # Seed with last 60 lines
+        try:
+            lines = AGENT_LOG.read_text().splitlines()[-60:]
+            for line in lines:
+                self._emit(line)
+            self._log_pos = AGENT_LOG.stat().st_size
+        except Exception:
+            pass
+
+    def _poll_log(self) -> None:
+        try:
+            size = AGENT_LOG.stat().st_size
+            if size <= self._log_pos:
+                return
+            with AGENT_LOG.open() as f:
+                f.seek(self._log_pos)
+                new = f.read()
+            self._log_pos = size
+            for line in new.splitlines():
+                self._emit(line)
+        except Exception:
+            pass
+
+    def _emit(self, line: str) -> None:
+        line = line.strip()
+        if not line:
+            return
+        if "ERROR" in line:
+            self.write(f"[red]{line}[/red]")
+        elif "WARNING" in line:
+            self.write(f"[yellow]{line}[/yellow]")
+        elif "cron.scheduler" in line or any(n in line for n in JOB_NAMES):
+            self.write(f"[cyan]{line}[/cyan]")
+        elif "tool_call" in line.lower() or "web_search" in line.lower():
+            self.write(f"[green]{line}[/green]")
+        else:
+            self.write(f"[dim]{line}[/dim]")
+
+
+class FindingsPanel(Vertical):
+    """Lists report files; clicking one shows contents."""
+
+    def compose(self) -> ComposeResult:
+        with Horizontal(id="findings-split"):
+            with Vertical(id="findings-list-col"):
+                yield Label("[bold]Reports[/bold]", id="findings-label")
+                yield ListView(id="findings-list")
+            with ScrollableContainer(id="findings-viewer"):
+                yield Label("[dim]Select a report →[/dim]", id="findings-content")
+
+    def on_mount(self) -> None:
+        self.set_interval(30, self._refresh_list)
+        self._refresh_list()
+
+    def _refresh_list(self) -> None:
+        try:
+            lv = self.query_one("#findings-list", ListView)
+            reports = list_reports()
+            lv.clear()
+            if not reports:
+                lv.append(ListItem(Label("[dim]No reports yet[/dim]")))
+            else:
+                for r in reports:
+                    lv.append(ListItem(Label(r.name), id=f"report-{r.stem}"))
+        except NoMatches:
+            pass
+
+    def on_list_view_selected(self, event: ListView.Selected) -> None:
+        stem = (event.item.id or "").replace("report-", "")
+        path = INVESTIGATION_DIR / f"{stem}.md"
+        try:
+            text = path.read_text()
+        except Exception:
+            text = "[dim]Could not read file[/dim]"
+        try:
+            self.query_one("#findings-content", Label).update(text)
+        except NoMatches:
+            pass
+
+
+class ChatPanel(Vertical):
+    """Send a custom prompt to Good-Guy-Economy and stream the response."""
+
+    _proc: subprocess.Popen | None = None
+
+    def compose(self) -> ComposeResult:
+        yield Label(
+            "[bold cyan]Ask Good-Guy-Economy[/bold cyan]  [dim](uses osint-investigation skill)[/dim]"
+        )
+        yield RichLog(id="chat-log", markup=True, highlight=False)
+        with Horizontal(id="chat-input-row"):
+            yield Input(placeholder="Ask anything about the investigation…", id="chat-input")
+            yield Button("Send", id="chat-send", variant="primary")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "chat-send":
+            self._send()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        self._send()
+
+    def _send(self) -> None:
+        try:
+            inp = self.query_one("#chat-input", Input)
+            log = self.query_one("#chat-log", RichLog)
+        except NoMatches:
+            return
+        prompt = inp.value.strip()
+        if not prompt:
+            return
+        inp.value = ""
+        log.write(f"\n[bold green]You:[/bold green] {prompt}\n")
+        log.write("[bold cyan]Good-Guy-Economy:[/bold cyan] [dim]thinking…[/dim]\n")
+
+        def run() -> None:
+            try:
+                cmd = [
+                    "hermes", "-z", prompt,
+                    "--skills", "osint-investigation",
+                    "--workdir", str(INVESTIGATION_DIR),
+                ]
+                proc = subprocess.Popen(
+                    cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                    text=True, bufsize=1,
+                )
+                self._proc = proc
+                output = []
+                for line in proc.stdout:
+                    output.append(line)
+                proc.wait()
+                response = "".join(output).strip()
+                self.app.call_from_thread(
+                    log.write,
+                    f"[bold cyan]Good-Guy-Economy:[/bold cyan] {response}\n"
+                )
+            except Exception as e:
+                self.app.call_from_thread(
+                    log.write, f"[red]Error: {e}[/red]\n"
+                )
+            finally:
+                self._proc = None
+
+        threading.Thread(target=run, daemon=True).start()
+
+
+class BrowserPanel(Vertical):
+    """Live view of the Camofox anti-detect browser Good-Guy-Economy drives."""
+
+    def compose(self) -> ComposeResult:
+        yield Label("", id="browser-status")
+        with Horizontal(id="browser-btn-row"):
+            yield Button("🔍 Open Live View  [o]", id="btn-liveview", variant="primary")
+            yield Button("⟳ Refresh", id="btn-browser-refresh")
+        yield Static(
+            "[dim]The live view opens the Camofox browser in your web browser via\n"
+            "noVNC. You'll see exactly what Good-Guy-Economy sees in real time, and you can\n"
+            "click into it to solve a CAPTCHA or log in — then let the agent resume.[/dim]",
+            id="browser-help",
+        )
+
+    def on_mount(self) -> None:
+        self.set_interval(3, self.refresh_browser)
+        self.refresh_browser()
+
+    def refresh_browser(self) -> None:
+        h = camofox_health()
+        vnc = novnc_up()
+        if not h:
+            body = (
+                "[bold red]● Camofox browser: OFFLINE[/bold red]\n"
+                "[dim]start it with:  systemctl --user start camofox-browser[/dim]"
+            )
+        else:
+            running = h.get("browserRunning")
+            run_c = "green" if running else "red"
+            mem = (h.get("memory") or {}).get("rssMb", "?")
+            body = (
+                f"[bold cyan]CAMOFOX ANTI-DETECT BROWSER[/bold cyan]\n\n"
+                f"[bold]Engine[/bold]    {h.get('engine','?')}\n"
+                f"[bold]Browser[/bold]   [{run_c}]{'running' if running else 'stopped'}[/{run_c}]"
+                f"  (connected: {h.get('browserConnected')})\n"
+                f"[bold]Activity[/bold]  {h.get('activeTabs',0)} tabs, "
+                f"{h.get('activeSessions',0)} sessions\n"
+                f"[bold]Memory[/bold]    {mem} MB\n"
+                f"[bold]Failures[/bold]  {h.get('consecutiveFailures',0)}\n\n"
+            )
+            if vnc:
+                body += (
+                    f"[bold green]● Live view READY[/bold green]\n"
+                    f"[dim]{NOVNC_URL}[/dim]\n"
+                    f"Press [bold]o[/bold] (or the button) to open it."
+                )
+            else:
+                body += (
+                    "[bold yellow]● Live view not enabled yet[/bold yellow]\n"
+                    "[dim]Needs the noVNC stack. Install once with:[/dim]\n"
+                    "[dim]  sudo apt-get install -y x11vnc novnc python3-websockify[/dim]\n"
+                    "[dim]then: systemctl --user restart camofox-browser[/dim]"
+                )
+        try:
+            self.query_one("#browser-status", Label).update(body)
+        except NoMatches:
+            pass
+
+    def open_live_view(self) -> None:
+        try:
+            log = self.app.query_one("#live-log", RichLog)
+        except NoMatches:
+            log = None
+        if not novnc_up():
+            if log:
+                log.write("[yellow]Live view not enabled — install the noVNC stack first "
+                          "(see Browser tab).[/yellow]")
+            return
+        try:
+            subprocess.Popen(
+                ["xdg-open", NOVNC_URL],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+            if log:
+                log.write(f"[green]Opening live browser view: {NOVNC_URL}[/green]")
+        except Exception as e:
+            if log:
+                log.write(f"[red]Could not open browser: {e}[/red]")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "btn-liveview":
+            self.open_live_view()
+        elif event.button.id == "btn-browser-refresh":
+            self.refresh_browser()
+
+
+class GoodGuyEconomyApp(App):
+    TITLE = "Good-Guy-Economy | Dev Console"
+    CSS = """
+    Screen {
+        layout: vertical;
+    }
+
+    #main-layout {
+        layout: horizontal;
+        height: 1fr;
+    }
+
+    #left-panel {
+        width: 34;
+        min-width: 32;
+        border: solid $primary-darken-2;
+        padding: 1;
+        height: 100%;
+    }
+
+    #action-buttons {
+        margin-top: 1;
+        layout: vertical;
+    }
+
+    #action-buttons Button {
+        width: 100%;
+        margin-bottom: 1;
+    }
+
+    #right-panel {
+        width: 1fr;
+        height: 100%;
+    }
+
+    TabbedContent {
+        height: 1fr;
+    }
+
+    TabbedContent ContentSwitcher {
+        height: 1fr;
+    }
+
+    TabPane {
+        padding: 0 1;
+        height: 1fr;
+    }
+
+    LiveLog {
+        height: 1fr;
+        border: solid $surface-lighten-1;
+    }
+
+    FindingsPanel {
+        height: 1fr;
+    }
+
+    #findings-split {
+        height: 1fr;
+    }
+
+    #findings-list-col {
+        width: 35;
+        border-right: solid $primary-darken-2;
+    }
+
+    #findings-list {
+        height: 1fr;
+    }
+
+    #findings-viewer {
+        width: 1fr;
+        padding: 0 1;
+    }
+
+    ChatPanel {
+        height: 1fr;
+        layout: vertical;
+    }
+
+    #chat-log {
+        height: 1fr;
+        border: solid $surface-lighten-1;
+    }
+
+    #chat-input-row {
+        height: 3;
+        layout: horizontal;
+        margin-top: 1;
+    }
+
+    #chat-input {
+        width: 1fr;
+    }
+
+    #chat-send {
+        width: 10;
+        margin-left: 1;
+    }
+
+    BrowserPanel {
+        height: 1fr;
+        padding: 1;
+    }
+
+    #browser-status {
+        height: auto;
+    }
+
+    #browser-btn-row {
+        height: 3;
+        margin-top: 1;
+    }
+
+    #btn-liveview {
+        margin-right: 1;
+    }
+
+    #browser-help {
+        margin-top: 1;
+        color: $text-muted;
+    }
+    """
+
+    BINDINGS = [
+        Binding("c", "run_job('good-guy-economy-collect')", "Collect"),
+        Binding("b", "run_job('good-guy-economy-brainstorm')", "Brainstorm"),
+        Binding("v", "run_job('good-guy-economy-scenario')", "Scenario"),
+        Binding("f", "run_job('good-guy-economy-refine')", "Refine"),
+        Binding("p", "toggle_pause", "Pause/Resume"),
+        Binding("u", "start_stack", "Start Stack"),
+        Binding("s", "stop_stack", "Stop Stack"),
+        Binding("1", "switch_tab('log')", "Log"),
+        Binding("2", "switch_tab('findings')", "Findings"),
+        Binding("3", "switch_tab('ask')", "Ask"),
+        Binding("4", "switch_tab('browser')", "Browser"),
+        Binding("o", "open_live_view", "Live View"),
+        Binding("q", "quit", "Quit"),
+    ]
+
+    def compose(self) -> ComposeResult:
+        yield Header()
+        with Horizontal(id="main-layout"):
+            with Vertical(id="left-panel"):
+                yield StatusPanel(id="status-panel")
+                with Vertical(id="action-buttons"):
+                    yield Button("▶ Start Stack  [u]", id="btn-start", variant="success")
+                    yield Button("⏻ Stop Stack  [s]", id="btn-stop", variant="error")
+                    yield Button("⏸ Pause/Resume All  [p]", id="btn-pause", variant="warning")
+                    yield Button("✕ Quit  [q]", id="btn-quit", variant="error")
+            with Container(id="right-panel"):
+                with TabbedContent(id="tabs", initial="log"):
+                    with TabPane("Live Log", id="log"):
+                        yield LiveLog(markup=True, highlight=False, id="live-log")
+                    with TabPane("Findings", id="findings"):
+                        yield FindingsPanel(id="findings-panel")
+                    with TabPane("Ask Good-Guy-Economy", id="ask"):
+                        yield ChatPanel(id="chat-panel")
+                    with TabPane("Browser", id="browser"):
+                        yield BrowserPanel(id="browser-panel")
+        yield Footer()
+
+    def on_mount(self) -> None:
+        self.set_interval(5, self._refresh_status)
+        self._refresh_status()
+
+    def _refresh_status(self) -> None:
+        try:
+            self.query_one("#status-panel", StatusPanel).refresh_status()
+        except NoMatches:
+            pass
+
+    def action_run_job(self, name: str) -> None:
+        job = load_jobs().get(name)
+        if not job:
+            self._log(f"[red]No job data for {name} (is the stack running?)[/red]")
+            return
+        label = JOB_LABELS.get(name, name)
+        self._log(f"[bold yellow]▶ Triggering {label} sweep…[/bold yellow]")
+        threading.Thread(target=self._do_run, args=(job["id"], label), daemon=True).start()
+
+    def _do_run(self, job_id: str, label: str) -> None:
+        result = subprocess.run(
+            ["hermes", "cron", "run", job_id],
+            capture_output=True, text=True,
+        )
+        msg = result.stdout.strip() or result.stderr.strip()
+        self.call_from_thread(self._log, f"[cyan]{label}: {msg}[/cyan]")
+
+    def _log(self, msg: str) -> None:
+        try:
+            self.query_one("#live-log", RichLog).write(msg)
+        except NoMatches:
+            pass
+
+    def action_switch_tab(self, tab_id: str) -> None:
+        try:
+            self.query_one("#tabs", TabbedContent).active = tab_id
+        except NoMatches:
+            pass
+
+    def action_open_live_view(self) -> None:
+        try:
+            self.query_one("#browser-panel", BrowserPanel).open_live_view()
+        except NoMatches:
+            pass
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "btn-start":
+            self.action_start_stack()
+        elif event.button.id == "btn-stop":
+            self.action_stop_stack()
+        elif event.button.id == "btn-pause":
+            self.action_toggle_pause()
+        elif event.button.id == "btn-quit":
+            self.exit()
+
+    def action_toggle_pause(self) -> None:
+        jobs = load_jobs()
+        if not jobs:
+            self._log("[red]No job data — is the stack running?[/red]")
+            return
+        # If any job is scheduled (not paused), pausing wins; otherwise resume all.
+        any_active = any(j.get("state") != "paused" for j in jobs.values())
+        verb = "pause" if any_active else "resume"
+        threading.Thread(target=self._do_toggle_pause, args=(jobs, verb), daemon=True).start()
+
+    def _do_toggle_pause(self, jobs: dict, verb: str) -> None:
+        for name, job in jobs.items():
+            subprocess.run(["hermes", "cron", verb, job["id"]], capture_output=True)
+        self.call_from_thread(self._log, f"[cyan]{verb}d all jobs[/cyan]")
+        self.call_from_thread(self._refresh_status)
+
+    def action_start_stack(self) -> None:
+        self._log("[bold yellow]▶ Starting Good-Guy-Economy stack…[/bold yellow]")
+        threading.Thread(target=self._do_stack_cmd, args=("start",), daemon=True).start()
+
+    def action_stop_stack(self) -> None:
+        self._log("[bold yellow]⏻ Stopping Good-Guy-Economy stack…[/bold yellow]")
+        threading.Thread(target=self._do_stack_cmd, args=("stop",), daemon=True).start()
+
+    def _do_stack_cmd(self, verb: str) -> None:
+        services = STACK_SERVICES if verb == "start" else list(reversed(STACK_SERVICES))
+        for svc in services:
+            result = subprocess.run(
+                ["systemctl", "--user", verb, f"{svc}.service"],
+                capture_output=True, text=True,
+            )
+            if result.returncode != 0:
+                err = (result.stderr or result.stdout).strip()
+                self.call_from_thread(self._log, f"[red]{svc}: {err}[/red]")
+            else:
+                self.call_from_thread(self._log, f"[green]{svc} {verb}ed[/green]")
+        if verb == "stop":
+            # hermes-gateway exits 1 on SIGTERM (cosmetic, and it self-rewrites its
+            # own unit file so a SuccessExitStatus fix in the unit won't stick).
+            subprocess.run(
+                ["systemctl", "--user", "reset-failed", "hermes-gateway.service"],
+                capture_output=True,
+            )
+        self.call_from_thread(self._refresh_status)
+
+
+if __name__ == "__main__":
+    GoodGuyEconomyApp().run()

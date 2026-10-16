@@ -1,0 +1,15 @@
+[Unit]
+Description=Good-Guy-Economy Notifier — desktop + Telegram alerts on new highlights
+After=graphical-session.target
+
+[Service]
+Type=simple
+# D-Bus session address so notify-send can reach the desktop from a --user service
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%U/bus
+Environment=DISPLAY=:0
+ExecStart=/usr/bin/python3 %h/.local/bin/good-guy-economy-notifier
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target

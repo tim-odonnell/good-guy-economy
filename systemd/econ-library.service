@@ -1,0 +1,14 @@
+[Unit]
+Description=Good-Guy-Economy library: download new official US-economy documents (Fed, BLS, BEA, CBO) into ~/Good-Guy-Economy-Library
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/econ-library fetch
+# light background job: low CPU/IO priority and hard caps so it can never starve the desktop
+Nice=15
+IOSchedulingClass=idle
+CPUQuota=50%
+MemoryMax=600M
+MemorySwapMax=0
+TimeoutStartSec=2h

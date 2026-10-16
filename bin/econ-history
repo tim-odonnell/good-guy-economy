@@ -1,0 +1,142 @@
+#!/usr/bin/env python3
+"""econ-history — count past episodes of an economic condition and what followed.
+
+Built for Good-Guy-Economy's SCENARIO mode (US economy topic) so the model doesn't have to
+read 900-row FRED files by eye. Fetches monthly FRED data (no API key), finds every
+episode where the condition started, and checks whether an NBER recession (USREC)
+began within 6, 12 and 24 months (shown side by side — the yield curve, for
+example, has historically led recessions by 12-24 months, so one window misleads).
+
+  econ-history T10Y2Y below 0
+  econ-history UNRATE rise-from-low 0.5           # up >= 0.5 pt from its 12-month low
+  econ-history CPILFESL above 3 --transform pc1   # core CPI y/y above 3%
+  econ-history latest UNRATE                      # last 13 monthly values
+  econ-history latest CPIAUCSL --transform pc1
+
+Ops: above, below, rise-from-low, fall-from-high (the last two use a 12-month window).
+Transforms: lin (level, default), pc1 (% change from a year ago), chg (change from
+previous month), pch (% change from previous month).
+"""
+import argparse
+import sys
+import urllib.request
+
+FRED = "https://fred.stlouisfed.org/graph/fredgraph.csv?id={id}&fq=Monthly&transformation={tr}"
+
+
+def fetch(series, transform="lin"):
+    url = FRED.format(id=series, tr=transform)
+    try:
+        with urllib.request.urlopen(url, timeout=60) as r:
+            text = r.read().decode()
+    except Exception as e:
+        sys.exit(f"FETCH FAILED: {url} ({e}) — no data, do not guess values")
+    rows = []
+    for line in text.splitlines()[1:]:
+        date, _, val = line.partition(",")
+        if val.strip() in ("", "."):
+            continue  # blank = no data (holiday / month not finished), never zero
+        rows.append((date[:7], float(val)))
+    if not rows:
+        sys.exit(f"NO DATA for {series} — check the series id")
+    return rows
+
+
+def condition_flags(rows, op, threshold):
+    flags = []
+    for i, (_, v) in enumerate(rows):
+        if op == "above":
+            ok = v > threshold
+        elif op == "below":
+            ok = v < threshold
+        else:
+            window = [x for _, x in rows[max(0, i - 12):i + 1]]
+            if len(window) < 13:
+                ok = False
+            elif op == "rise-from-low":
+                ok = v - min(window) >= threshold
+            else:  # fall-from-high
+                ok = max(window) - v >= threshold
+        flags.append(ok)
+    return flags
+
+
+def months_between(a, b):
+    ya, ma = map(int, a.split("-"))
+    yb, mb = map(int, b.split("-"))
+    return (yb - ya) * 12 + (mb - ma)
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("series", help="FRED id, or the word 'latest'")
+    ap.add_argument("op", nargs="?")
+    ap.add_argument("threshold", nargs="?", type=float)
+    ap.add_argument("--transform", default="lin", choices=["lin", "pc1", "chg", "pch"])
+    ap.add_argument("--gap", type=int, default=6, help="merge episodes separated by fewer than N months (default 6)")
+    a = ap.parse_args()
+
+    if a.series == "latest":
+        if not a.op:
+            sys.exit("usage: econ-history latest SERIES [--transform pc1]")
+        rows = fetch(a.op, a.transform)
+        print(f"{a.op} ({a.transform}), monthly, last 13 values — FRED, revised data as of today:")
+        for d, v in rows[-13:]:
+            print(f"  {d}  {v:g}")
+        return
+
+    if a.op not in ("above", "below", "rise-from-low", "fall-from-high") or a.threshold is None:
+        sys.exit("usage: econ-history SERIES {above|below|rise-from-low|fall-from-high} THRESHOLD [--transform ..]")
+
+    rows = fetch(a.series, a.transform)
+    rec = dict(fetch("USREC"))
+    rec_months = sorted(rec)
+    rec_starts = [m for i, m in enumerate(rec_months)
+                  if rec[m] == 1 and (i == 0 or rec[rec_months[i - 1]] == 0)]
+
+    flags = condition_flags(rows, a.op, a.threshold)
+    episodes = []  # [start, end]
+    for (d, _), ok in zip(rows, flags):
+        if not ok:
+            continue
+        if episodes and months_between(episodes[-1][1], d) <= a.gap:
+            episodes[-1][1] = d
+        else:
+            episodes.append([d, d])
+
+    val = dict(rows)
+    first, last = rows[0][0], rows[-1][0]
+    usable_recs = [r for r in rec_starts if r >= first]
+    print(f"{a.series} {a.op} {a.threshold:g} (transform {a.transform}, monthly averages)")
+    print(f"Data: {first} to {last} — covers {len(usable_recs)} recession starts: {', '.join(usable_recs) or 'none'}")
+    print(f"Now ({last}): value {val[last]:g}, condition {'TRUE' if flags[-1] else 'false'}")
+    print()
+
+    horizons = (6, 12, 24)
+    tally = {h: [0, 0] for h in horizons}  # h -> [recessions followed, judgeable episodes]
+    for start, end in episodes:
+        nxt = next((r for r in rec_starts if r > start), None)
+        lead = months_between(start, nxt) if nxt else None
+        if rec.get(start) == 1:
+            note = "already in a recession at start — not counted"
+        else:
+            note = (f"next recession began {nxt}, {lead} month(s) later" if nxt
+                    else "no recession since")
+            for h in horizons:
+                if lead is not None and lead <= h:
+                    tally[h][0] += 1
+                    tally[h][1] += 1
+                elif months_between(start, last) >= h:
+                    tally[h][1] += 1  # enough time has passed to judge this horizon
+        print(f"  {start} to {end}: start value {val[start]:g} — {note}")
+
+    print()
+    print(f"RESULT ({len(episodes)} episodes; too-recent ones are left out of each count):")
+    for h in horizons:
+        hit, n = tally[h]
+        weak = "  WEAK: fewer than 3 past matches" if n < 3 else ""
+        print(f"  recession within {h:>2} months: {hit} of {n}{weak}")
+
+
+if __name__ == "__main__":
+    main()

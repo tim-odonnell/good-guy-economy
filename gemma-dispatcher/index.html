@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gemma</title>
+<style>
+  :root{
+    --bg:#F7F6F2; --panel:#fff; --ink:#161D26; --ink-2:#4A5560; --ink-3:#7C8792;
+    --rule:#DCD9D1; --accent:#1A5F73; --accent-soft:#E2EEF1; --tool:#8A6212; --tool-soft:#F5EEE0;
+    --mono:"IBM Plex Mono",ui-monospace,"SF Mono",Menlo,monospace;
+    --sans:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",sans-serif;
+  }
+  @media (prefers-color-scheme:dark){
+    :root{ --bg:#12161B; --panel:#181D24; --ink:#E8E9E6; --ink-2:#B3BAC2; --ink-3:#828C97;
+      --rule:#2A323B; --accent:#63B6C9; --accent-soft:#16323A; --tool:#D6A94A; --tool-soft:#2C2415; }
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);
+    display:flex;flex-direction:column}
+  header{padding:.85rem 1.1rem;border-bottom:1px solid var(--rule);display:flex;
+    align-items:center;gap:.7rem;background:var(--panel)}
+  header h1{font-size:1rem;margin:0;font-weight:600;letter-spacing:.01em}
+  .dot{width:8px;height:8px;border-radius:50%;background:var(--ink-3);flex:none}
+  .dot.on{background:#2E9E63}.dot.off{background:#C4553A}
+  header .status{font-family:var(--mono);font-size:.72rem;color:var(--ink-3)}
+  #log{flex:1;overflow-y:auto;padding:1.2rem;display:flex;flex-direction:column;gap:1rem}
+  .wrap{max-width:46rem;width:100%;margin:0 auto}
+  .msg{display:flex;flex-direction:column;gap:.3rem}
+  .who{font-family:var(--mono);font-size:.66rem;letter-spacing:.11em;text-transform:uppercase;color:var(--ink-3)}
+  .bubble{white-space:pre-wrap;line-height:1.55}
+  .user .bubble{background:var(--accent-soft);border-left:3px solid var(--accent);
+    padding:.65rem .85rem;border-radius:0 4px 4px 0}
+  details.tool{background:var(--tool-soft);border:1px solid var(--tool);border-radius:3px;
+    padding:.45rem .65rem;font-family:var(--mono);font-size:.75rem;color:var(--tool)}
+  details.tool summary{cursor:pointer;font-weight:600}
+  details.tool pre{margin:.5rem 0 0;white-space:pre-wrap;color:var(--ink-2);font-size:.72rem;
+    max-height:16rem;overflow:auto}
+  .empty{color:var(--ink-3);font-size:.9rem;line-height:1.6}
+  .empty code{font-family:var(--mono);font-size:.85em;background:var(--panel);padding:.1em .35em;border:1px solid var(--rule);border-radius:3px}
+  form{border-top:1px solid var(--rule);background:var(--panel);padding:.8rem 1.1rem}
+  .row{max-width:46rem;margin:0 auto;display:flex;gap:.6rem;align-items:flex-end}
+  textarea{flex:1;resize:none;font:inherit;font-size:.95rem;padding:.6rem .7rem;border-radius:4px;
+    border:1px solid var(--rule);background:var(--bg);color:var(--ink);min-height:2.6rem;max-height:9rem}
+  textarea:focus{outline:2px solid var(--accent);outline-offset:-1px}
+  button{font:inherit;font-weight:600;padding:.6rem 1.1rem;border-radius:4px;border:none;
+    background:var(--accent);color:#fff;cursor:pointer}
+  button:disabled{opacity:.5;cursor:default}
+  .think{color:var(--ink-3);font-style:italic}
+</style>
+</head>
+<body>
+<header>
+  <span class="dot" id="dot"></span>
+  <h1>Gemma</h1>
+  <span class="status" id="status">checking…</span>
+</header>
+
+<div id="log">
+  <div class="wrap empty" id="empty">
+    <p><strong>Ask me to run this machine.</strong> I work on the CPU; anything heavy I hand to the big model on your graphics cards.</p>
+    <p>Try: <code>what's running right now?</code> · <code>start good-guy-economy</code> · <code>show me the GPUs</code> ·
+    <code>find every gguf in my models folder</code> · <code>what's the forecast for next week?</code></p>
+  </div>
+</div>
+
+<form id="form">
+  <div class="row">
+    <textarea id="input" placeholder="Tell me what to do…" rows="1" autofocus></textarea>
+    <button id="send" type="submit">Send</button>
+  </div>
+</form>
+
+<script>
+const log=document.getElementById('log'), form=document.getElementById('form'),
+      input=document.getElementById('input'), send=document.getElementById('send'),
+      dot=document.getElementById('dot'), status=document.getElementById('status'),
+      empty=document.getElementById('empty');
+let history=[];
+
+async function ping(){
+  try{ const r=await fetch('/api/health'); const j=await r.json();
+    dot.className='dot '+(j.ok?'on':'off'); status.textContent=j.ok?'ready · CPU':'model not responding';
+  }catch{ dot.className='dot off'; status.textContent='offline'; }
+}
+ping(); setInterval(ping,15000);
+
+function add(who,text,cls){
+  const w=document.createElement('div'); w.className='wrap msg '+(cls||'');
+  const h=document.createElement('div'); h.className='who'; h.textContent=who;
+  const b=document.createElement('div'); b.className='bubble'; b.textContent=text;
+  w.append(h,b); log.append(w); log.scrollTop=log.scrollHeight; return b;
+}
+function addTool(t){
+  const w=document.createElement('div'); w.className='wrap';
+  const d=document.createElement('details'); d.className='tool';
+  const s=document.createElement('summary'); s.textContent='ran '+t.tool+'  '+t.args;
+  const p=document.createElement('pre'); p.textContent=t.result;
+  d.append(s,p); w.append(d); log.append(w); log.scrollTop=log.scrollHeight;
+}
+
+form.addEventListener('submit',async e=>{
+  e.preventDefault();
+  const text=input.value.trim(); if(!text) return;
+  if(empty) empty.remove();
+  add('You',text,'user'); input.value=''; input.style.height='auto';
+  send.disabled=true;
+  const pending=add('Gemma','working…','think');
+  try{
+    const r=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({message:text,history})});
+    const j=await r.json();
+    pending.closest('.msg').remove();
+    (j.trace||[]).forEach(addTool);
+    add('Gemma', j.reply||'(no reply)');
+    history.push({role:'user',content:text});
+    history.push({role:'assistant',content:j.reply||''});
+  }catch(err){
+    pending.textContent='Something went wrong: '+err;
+    pending.classList.remove('think');
+  }
+  send.disabled=false; input.focus();
+});
+
+input.addEventListener('input',()=>{input.style.height='auto';input.style.height=Math.min(input.scrollHeight,144)+'px';});
+input.addEventListener('keydown',e=>{
+  if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();form.requestSubmit();}
+});
+</script>
+</body>
+</html>

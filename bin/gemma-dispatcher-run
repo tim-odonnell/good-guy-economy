@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# Wrapper so gemma-dispatcher.service never needs editing for a model swap,
+# a retune, or a llama.cpp upgrade — all of that lives in model.env.
+set -euo pipefail
+
+ENV_FILE="$HOME/.config/gemma-dispatcher/model.env"
+if [ ! -f "$ENV_FILE" ]; then
+    echo "Missing $ENV_FILE" >&2
+    exit 1
+fi
+set -a
+source "$ENV_FILE"
+set +a
+
+export LD_LIBRARY_PATH="$GEMMA_LLAMA_LIB_DIR"
+
+# Thinking off => tool calls in ~4s instead of ~30-60s. See model.env.
+THINK_ARGS=()
+if [ "${GEMMA_THINKING:-false}" = "false" ]; then
+    THINK_ARGS=(--chat-template-kwargs '{"enable_thinking":false}')
+fi
+
+# Vision. Optional: set GEMMA_MMPROJ in model.env to the projector .gguf.
+# Unset => text only, exactly as before.
+MMPROJ_ARGS=()
+if [ -n "${GEMMA_MMPROJ:-}" ]; then
+    MMPROJ_ARGS=(--mmproj "$GEMMA_MMPROJ")
+fi
+
+# -ngl 0 is deliberate and not configurable: this model runs on CPU only.
+# The WX9100s belong to Good-Guy-Economy.
+exec "$GEMMA_LLAMA_BIN" \
+    -m  "$GEMMA_MODEL_PATH" \
+    -md "$GEMMA_DRAFT_PATH" \
+    --spec-type draft-mtp --spec-draft-n-max "$GEMMA_SPEC_N_MAX" \
+    -ngl 0 \
+    -t "$GEMMA_THREADS" \
+    -c "$GEMMA_CTX" \
+    -np 1 \
+    -fa on \
+    --cache-type-k "${GEMMA_CACHE_TYPE_K:-f16}" \
+    --cache-type-v "${GEMMA_CACHE_TYPE_V:-f16}" \
+    --no-mmap \
+    --load-mode mlock \
+    --jinja --chat-template-file "$GEMMA_CHAT_TEMPLATE" \
+    "${MMPROJ_ARGS[@]}" \
+    "${THINK_ARGS[@]}" \
+    --slot-save-path "$HOME/.cache/gemma-slots" \
+    --host 127.0.0.1 --port "$GEMMA_PORT" \
+    --alias gemma-dispatcher

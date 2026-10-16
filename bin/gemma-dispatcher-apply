@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Run after editing ~/.config/gemma-dispatcher/model.env to apply the change.
+set -euo pipefail
+set -a; source "$HOME/.config/gemma-dispatcher/model.env"; set +a
+echo "Applying:"
+echo "  model   : $(basename "$GEMMA_MODEL_PATH")"
+echo "  context : $GEMMA_CTX"
+echo "  threads : $GEMMA_THREADS   draft n-max: $GEMMA_SPEC_N_MAX"
+systemctl --user restart gemma-dispatcher.service
+echo -n "Waiting for the model to load"
+for i in $(seq 1 150); do
+    if curl -sf --max-time 2 "http://127.0.0.1:$GEMMA_PORT/health" >/dev/null 2>&1; then
+        echo " ready."; exit 0
+    fi
+    echo -n "."; sleep 2
+done
+echo
+echo "WARNING: not ready within 300s — check: systemctl --user status gemma-dispatcher.service" >&2
+exit 1

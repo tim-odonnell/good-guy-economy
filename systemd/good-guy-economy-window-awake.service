@@ -1,0 +1,9 @@
+[Unit]
+Description=Good-Guy-Economy — keep the machine awake (no suspend, idle sleep or lid-close sleep) during the nightly window
+# Started by good-guy-economy-window-start, stopped by good-guy-economy-window-stop at 07:00. RuntimeMaxSec is a safety net
+# in case the stop never runs. Added 2026-10-10: the window was lost to a suspend at 00:43 on 2026-10-10.
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/systemd-inhibit --what=sleep:idle:handle-lid-switch --who=Good-Guy-Economy --why="Nightly economy run until 07:00" --mode=block /usr/bin/sleep infinity
+RuntimeMaxSec=7h
