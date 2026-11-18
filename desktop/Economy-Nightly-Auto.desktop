@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Economy Report - Nightly Auto
+Comment=Switches back to automatic nightly scheduling mode.
+Exec=/home/user/.local/bin/econ-mode nightly
+Icon=appointment-soon
+Terminal=false
+Categories=Utility;

@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Economy Report - Run Now
+Comment=Runs the entire economy report pipeline immediately.
+Exec=/home/user/.local/bin/econ-run-now
+Icon=x-office-document
+Terminal=false
+Categories=Utility;

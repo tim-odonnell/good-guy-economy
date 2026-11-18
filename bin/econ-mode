@@ -1,0 +1,61 @@
+#!/bin/bash
+# econ-mode - switch the economy report between manual (Run Now icon only) and nightly automatic runs.
+# Usage: econ-mode [manual|nightly|status]
+
+set -u
+
+MODE_FILE="$HOME/.config/good-guy-economy/run-mode"
+MODE_DIR=$(dirname "$MODE_FILE")
+mkdir -p "$MODE_DIR"
+
+# Hermes job ids differ per install: look them up by name (good-guy-economy-<stage>).
+STAGES=(collect brainstorm scenario refine morning factcheck)
+job_id() {
+    python3 -c "import json,sys;print(next((x['id'] for x in json.load(open(sys.argv[2]))['jobs'] if x['name']=='good-guy-economy-'+sys.argv[1]),''))" "$1" "$HOME/.hermes/cron/jobs.json"
+}
+all_job_ids() { for s in "${STAGES[@]}"; do job_id "$s"; done; }
+
+case "${1:-}" in
+    manual)
+        # manual: disable all timers, pause all jobs, set mode file, notify user
+        echo "Setting mode to manual..."
+        systemctl --user disable --now good-guy-economy-window-start.timer good-guy-economy-window-stop.timer econ-report-build.timer econ-report-notify.timer econ-library.timer
+        JOBS=($(all_job_ids))
+        for id in "${JOBS[@]}"; do hermes cron pause "$id"; done
+        echo manual > "$MODE_FILE"
+        notify-send "Economy Mode" "Economy report is now in MANUAL mode."
+        ;;
+    nightly)
+        # nightly: enable all timers, resume all jobs, set mode file, notify user
+        echo "Setting mode to nightly..."
+        systemctl --user enable --now good-guy-economy-window-start.timer good-guy-economy-window-stop.timer econ-report-build.timer econ-report-notify.timer econ-library.timer
+        JOBS=($(all_job_ids))
+        for id in "${JOBS[@]}"; do hermes cron resume "$id"; done
+        echo nightly > "$MODE_FILE"
+        notify-send "Economy Mode" "Economy report is now in NIGHTLY mode."
+        ;;
+    status)
+        # status: print mode file, timer status, and cron job list
+        echo "--- Economy Mode Status ---"
+        if [ -f "$MODE_FILE" ]; then
+            echo "Run Mode File: $MODE_FILE"
+            echo "Current Mode: $(cat "$MODE_FILE")"
+        else
+            echo "Run Mode File: Not found."
+        fi
+        echo ""
+        echo "Timer Status:"
+        systemctl --user is-enabled good-guy-economy-window-start.timer
+        systemctl --user is-enabled good-guy-economy-window-stop.timer
+        systemctl --user is-enabled econ-report-build.timer
+        systemctl --user is-enabled econ-report-notify.timer
+        systemctl --user is-enabled econ-library.timer
+        echo ""
+        echo "Hermes Cron Jobs:"
+        hermes cron list --all | grep -E "good-guy-economy|State|Status|paused|scheduled" || hermes cron list --all
+        ;;
+    *)
+        echo "Usage: $0 [manual|nightly|status]" >&2
+        exit 1
+        ;;
+esac

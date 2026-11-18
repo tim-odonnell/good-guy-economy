@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Economy Report - Manual Mode
+Comment=Switches economy report to manual mode (pauses all jobs).
+Exec=/home/user/.local/bin/econ-mode manual
+Icon=media-playback-pause
+Terminal=false
+Categories=Utility;

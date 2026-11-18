@@ -1,0 +1,183 @@
+#!/bin/bash
+# econ-run-now - run the nightly economy pipeline once, now (desktop icon "Economy Report - Run Now").
+# Re-launches itself as the systemd user unit econ-run-now, so closing anything can't kill it.
+# Log: ~/Economy-Reports/run-now.log. Drafted by a local Gemma E2B, fixed by Claude.
+
+set -u
+export PATH="$HOME/.local/bin:$PATH"
+
+# Configuration
+MODE_FILE="$HOME/.config/good-guy-economy/run-mode"
+LOG_FILE="$HOME/Economy-Reports/run-now.log"
+LOCK_FILE="$HOME/.cache/econ-run-now.lock"
+WORK_DIR="$HOME/Economy-Reports"
+LOCK_FD=9
+
+# --- Logging function ---
+log_message() {
+    TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
+    echo "[$TIMESTAMP] $1" | tee -a "$LOG_FILE"
+}
+
+
+# Hermes job ids differ per install: look them up by name (good-guy-economy-<stage>).
+STAGES=(collect brainstorm scenario refine morning factcheck)
+job_id() {
+    python3 -c "import json,sys;print(next((x['id'] for x in json.load(open(sys.argv[2]))['jobs'] if x['name']=='good-guy-economy-'+sys.argv[1]),''))" "$1" "$HOME/.hermes/cron/jobs.json"
+}
+all_job_ids() { for s in "${STAGES[@]}"; do job_id "$s"; done; }
+
+# --- One field of a Hermes job from jobs.json ---
+job_field() {
+    python3 -c "import json,sys;j=[x for x in json.load(open(sys.argv[3]))['jobs'] if x['id']==sys.argv[1]][0];print(j.get(sys.argv[2]))" "$1" "$2" "$HOME/.hermes/cron/jobs.json"
+}
+
+# --- Run Job function ---
+run_job() {
+    local job_id="$1"
+    local job_name="$2"
+    
+    log_message "Running job: $job_id ($job_name)"
+    local before
+    before=$(job_field "$job_id" last_run_at)
+    # Hermes refuses to run a paused job: resume it first (cleanup re-pauses all jobs in manual mode)
+    hermes cron resume "$job_id" >> "$LOG_FILE" 2>&1
+    hermes cron run "$job_id" >> "$LOG_FILE" 2>&1
+
+    # hermes prints success even when the job failed: read the real result,
+    # and make sure it is a NEW result (not last night's "ok")
+    JOB_STATUS=$(job_field "$job_id" last_status)
+    if [ "$(job_field "$job_id" last_run_at)" = "$before" ]; then
+        JOB_STATUS="did-not-run"
+    fi
+
+    if [[ "$JOB_STATUS" == "ok" ]]; then
+        log_message "Job '$job_name' ($job_id) finished successfully."
+        return 0
+    else
+        log_message "WARNING: Job '$job_name' ($job_id) reported status: $JOB_STATUS."
+        notify-send "Economy report" "Stage '$job_name' failed ($JOB_STATUS) - see $LOG_FILE"
+        return 1
+    fi
+}
+
+# --- Cleanup trap function ---
+CLEANED=0
+cleanup() {
+    [ "$CLEANED" = 1 ] && return
+    CLEANED=1
+    log_message "Trap triggered. Stopping stack and window-awake service."
+    # Stop the stack
+    curl -sS -m 120 -X POST "http://127.0.0.1:8420/api/stack/stop?force=true" >> "$LOG_FILE" 2>&1
+    # Stop window-awake
+    systemctl --user stop good-guy-economy-window-awake.service
+    
+    # If manual mode, pause jobs again
+    if [ -f "$MODE_FILE" ] && grep -q "manual" "$MODE_FILE"; then
+        log_message "Manual mode detected. Pausing all Hermes cron jobs again."
+        JOBS=($(all_job_ids))
+        for id in "${JOBS[@]}"; do hermes cron pause "$id" >> "$LOG_FILE" 2>&1; done
+    fi
+    
+    log_message "Cleanup done."
+}
+
+# --- Self-relaunch mechanism ---
+if [ "${ECON_RUN_NOW_INNER:-}" != 1 ]; then
+    if systemctl --user is-active --quiet econ-run-now.service; then
+        notify-send "Economy report" "A run is already in progress (see ~/Economy-Reports/run-now.log)."
+        exit 1
+    fi
+    exec systemd-run --user --unit=econ-run-now --collect --setenv=ECON_RUN_NOW_INNER=1 --setenv=DISPLAY="${DISPLAY:-:0}" --setenv=DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-}" --setenv=PATH="$PATH" "$0" "$@"
+fi
+
+# --- Lock with flock ---
+exec 9>"$LOCK_FILE"
+if ! flock -n $LOCK_FD; then
+    notify-send "Economy Mode Error" "Economy report run is in progress. Please wait."
+    exit 1
+fi
+
+log_message "Starting Economy Report Run Now at $(date)"
+
+# Check if in nightly mode during run window
+if [ "$(date +%H)" -ge "01" ] && [ "$(date +%H)" -lt "07" ]; then
+    if [ -f "$MODE_FILE" ] && grep -q "nightly" "$MODE_FILE"; then
+        notify-send "Economy Mode Error" "Cannot run manually between 01:00 and 07:00. Mode is set to nightly."
+        exit 1
+    fi
+fi
+
+trap cleanup EXIT
+trap 'exit 1' INT TERM
+
+# 1. Notify user
+notify-send "Economy Report" "Economy report: starting."
+
+# 2. Start window-awake service
+systemctl --user start good-guy-economy-window-awake.service
+
+# 3. Start model server (once), then wait up to 15 minutes for it
+log_message "Starting model server..."
+curl -sS -m 120 -X POST http://127.0.0.1:8420/api/stack/start >> "$LOG_FILE" 2>&1
+READY=0
+for i in $(seq 1 180); do
+    if curl -sf -m 5 http://127.0.0.1:8099/health > /dev/null; then
+        READY=1
+        log_message "Model server is ready."
+        break
+    fi
+    sleep 5
+done
+if [ "$READY" != 1 ]; then
+    notify-send -u critical "Economy report" "Model server failed to start within 15 minutes. Check $LOG_FILE"
+    log_message "FATAL: Model server failed to start."
+    exit 1
+fi
+
+# 4. Fetch library documents
+log_message "Fetching economy library documents..."
+econ-library fetch >> "$LOG_FILE" 2>&1 || log_message "WARNING: econ-library fetch failed (not fatal)."
+
+# 5. Run jobs sequentially (collect, brainstorm, scenario, refine, morning, factcheck)
+for job_name in "${STAGES[@]}"; do
+    id=$(job_id "$job_name")
+    if [ -z "$id" ]; then
+        log_message "WARNING: no Hermes job named good-guy-economy-$job_name - skipped."
+        [ "$job_name" = collect ] && { notify-send -u critical "Economy report" "No COLLECT job found - run stopped."; exit 1; }
+        continue
+    fi
+    if [[ "$job_name" == "refine" ]]; then
+        # Run refine only when date +%u is 1 (Monday)
+        if [[ $(date +%u) -eq 1 ]]; then
+            # Check job status
+            run_job "$id" "$job_name"
+        else
+            # Skip if it's not Monday
+            log_message "Skipping job $job_name ($id) as it is not Monday (day $(date +%u)). Skipping execution."
+        fi
+    else
+        # Run all other jobs sequentially; without COLLECT there is nothing to report
+        if ! run_job "$id" "$job_name" && [ "$job_name" = collect ]; then
+            notify-send -u critical "Economy report" "COLLECT failed - run stopped. See $LOG_FILE"
+            log_message "FATAL: collect failed, stopping."
+            exit 1
+        fi
+    fi
+done
+
+# 6. Run final reports and log exit codes
+log_message "Building reports..."
+econ-report >> "$LOG_FILE" 2>&1
+EXIT_CODE_ECON_REPORT=$?
+log_message "econ-report exited with code $EXIT_CODE_ECON_REPORT"
+
+cleanup          # free the RAM now; the notification below can wait hours for a click
+flock -u $LOCK_FD
+log_message "Running econ-report --notify..."
+# The pop-up waits (up to 4 h) for a click: run it as its own unit so this run ends now
+# and the Run Now icon is free again straight away.
+systemd-run --user --collect --quiet --setenv=PATH="$PATH" econ-report --notify
+log_message "econ-report --notify started (exit $?). Run finished."
+
+# Cleanup trap will handle stopping stack/window-awake and re-pausing jobs if mode is manual.

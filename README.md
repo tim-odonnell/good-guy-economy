@@ -52,6 +52,15 @@ Rules it follows:
 - **Nothing old is presented as news.** The reading pack only holds documents released since the
   last report.
 
+### Nightly or on demand
+
+`econ-mode nightly` runs the schedule above every night; `econ-mode manual` turns all of it off (timers disabled,
+Hermes jobs paused) so it only runs when you ask; `econ-mode status` shows which is active. In either mode,
+`econ-run-now` runs the whole pipeline once, right away (about 25 minutes by day on an Intel N150): it starts the
+model, runs each stage in order, builds the report, stops the model and pops up the notification. It runs as its
+own systemd user unit (closing a terminal can't kill it), refuses a second run while one is going, and logs to
+`~/Economy-Reports/run-now.log`. Desktop icons: **Economy Report - Run Now**, **- Nightly Auto**, **- Manual Mode**.
+
 ### The document library
 
 `~/Good-Guy-Economy-Library` keeps the official documents the analysis draws on — FOMC statements,
@@ -95,7 +104,7 @@ Day-to-day start/stop: [`docs/START-STOP-RUNBOOK.md`](docs/START-STOP-RUNBOOK.md
 
 | Path | What |
 |------|------|
-| `bin/` | commands: `econ-report`, `econ-library`, `econ-fetch`, `econ-history`, `good-guy-economy-*` (start/stop, model runner, notifier, disk watchdog, job setup) |
+| `bin/` | commands: `econ-report`, `econ-library`, `econ-mode`, `econ-run-now`, `econ-fetch`, `econ-history`, `good-guy-economy-*` (start/stop, model runner, notifier, disk watchdog, job setup) |
 | `hermes-scripts/` | the pre-run scripts Hermes runs before each stage (`econ-digest.py`, `econ-pre-*.py`, `econ-modelcheck.py`) and the shared `econ_lib.py` / `econ_factcheck.py` — copied into `~/.hermes/scripts` by `install.sh` |
 | `hermes/jobs.example.json` | the six cron jobs: schedules, prompts, tool lists |
 | `investigation/` | the US-economy brief the model works from (`AGENTS.md`) and a catalog of ~310 official sources |
