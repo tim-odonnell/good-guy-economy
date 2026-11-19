@@ -25,6 +25,7 @@ import re
 import shutil
 import subprocess
 import sys
+from urllib.parse import quote
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
 
@@ -65,6 +66,25 @@ def alert_since():
 # Who wrote each analysis stage tonight: the local model, or econ-scripted.py (`econ-stages script|model`).
 SCRIPTED = {s: econ_lib.scripted(s) for s in ("brainstorm", "scenario", "morning")}
 WHO = {s: "written by script from the computed history" if v else "by the small local model" for s, v in SCRIPTED.items()}
+
+def headline_url(x):
+    """The article link (Google News links redirect to the article), else a Google News search for the exact title."""
+    return x.get("url") or x.get("link") or "https://news.google.com/search?q=" + quote('"' + x["title"] + '"')
+
+
+def source_url(line, d):
+    """Link for a news note's 'SOURCE: Agency — Title (date)' line: a URL in it, else the reading-pack or release
+    document whose title it names."""
+    m = re.search(r"https?://\S+", line)
+    if m:
+        return m.group(0).rstrip(").,")
+    low = line.lower()
+    for item in d.get("pack", []) + d.get("releases", []):
+        title, url = (item.get("title") or "").lower(), item.get("url") or item.get("link")
+        if url and len(title) > 10 and title in low:
+            return url
+    return ""
+
 
 MISSING = []  # model stages (brainstorm, scenario, morning) that did not finish OK today -> partial report
 
@@ -350,20 +370,24 @@ def build():
             H("p", "None.", "muted"); md += ["None.", ""]
         H("h2", "Headlines (AP, Reuters — last 24 hours)"); md += ["## Headlines (AP, Reuters — last 24 hours)", ""]
         if d["headlines"]:
-            h.append("<ul>" + "".join(f"<li><span class=src>{e(x['src'])}</span> {e(x['title'])}</li>" for x in d["headlines"]) + "</ul>")
-            md += [f"- [{x['src']}] {x['title']}" for x in d["headlines"]] + [""]
+            h.append("<ul>" + "".join(f"<li><span class=src>{e(x['src'])}</span> <a href='{e(headline_url(x))}'>{e(x['title'])}</a></li>" for x in d["headlines"]) + "</ul>")
+            md += [f"- [{x['src']}] [{x['title']}]({headline_url(x)})" for x in d["headlines"]] + [""]
         else:
             H("p", "None found.", "muted"); md += ["None found.", ""]
 
     if notes.strip():
-        body = re.sub(r"^(SOURCE|ACCESSED):.*\n", "", notes, flags=re.M)
+        body = re.sub(r"^(SOURCE: COLLECT run replies|ACCESSED:).*\n", "", notes, flags=re.M)  # file header only
         body = re.sub(r"^## COLLECT run .*\n", "", body, flags=re.M).strip()
         H("h2", "News notes <span class=tag>summarised by the model from official text — sources named per item</span>")
-        md += ["## News notes (model summaries of official text)", "", body, ""]
+        md += ["## News notes (model summaries of official text)", "",
+               re.sub(r"^SOURCE:\s*(.+)$", lambda m: f"Source: [{m.group(1)}]({source_url(m.group(1), d)})" if source_url(m.group(1), d) else f"Source: {m.group(1)}", body, flags=re.M), ""]
         out = []
         for ln in body.splitlines():
             if ln.startswith("###"):
                 out.append(f"<h3>{e(ln.lstrip('# '))}</h3>")
+            elif ln.startswith("SOURCE:"):
+                s_, u_ = ln[7:].strip(), source_url(ln[7:].strip(), d)
+                out.append(f"<p class=srcline>Source: " + (f"<a href='{e(u_)}'>{e(s_)}</a>" if u_ else e(s_)) + "</p>")
             elif ln.startswith(("- ", "* ")):
                 out.append(f"<li>{e(ln[2:])}</li>")
             elif ln.strip():
@@ -417,7 +441,7 @@ td.num{font-variant-numeric:tabular-nums;white-space:nowrap}.new{background:var(
 .src{font-size:.75em;font-weight:700;color:var(--acc);margin-right:4px}a{color:var(--acc)}.card{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:8px 12px;margin:8px 0}
 pre{white-space:pre-wrap;margin:6px 0 0;font-size:.9em}
 .dot{display:inline-block;width:12px;height:12px;border-radius:50%;border:2px solid var(--mut);margin-right:3px;vertical-align:-1px}
-.dot.on{background:var(--warn);border-color:var(--warn)}.lights{margin:8px 0}.notes h3{font-size:1em;margin:14px 0 4px}tr.verdict td{color:var(--mut);font-size:.88em;border-bottom:1px solid var(--line);padding-top:0}.notes li{margin-left:18px}.fc li{margin-bottom:6px}"""
+.dot.on{background:var(--warn);border-color:var(--warn)}.lights{margin:8px 0}.notes h3{font-size:1em;margin:14px 0 4px}tr.verdict td{color:var(--mut);font-size:.88em;border-bottom:1px solid var(--line);padding-top:0}.notes li{margin-left:18px}.srcline{margin:2px 0 4px;font-size:.85em;color:var(--mut)}.fc li{margin-bottom:6px}"""
     page = f"<!doctype html><html lang=en><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>{e(title)}</title><style>{css}</style></head><body>{''.join(h)}</body></html>"
     OUT.mkdir(exist_ok=True)
     out_html, out_md = OUT / f"{TODAY}.html", OUT / f"{TODAY}.md"

@@ -181,7 +181,7 @@ def feed_items(xml_text):
                 dt = None
         link = f("link", a + "link")
         desc = re.sub(r"<[^>]+>", " ", f("description", a + "summary"))
-        out.append({"title": title, "date": dt.date().isoformat() if dt else "", "link": "" if "news.google.com" in link else link,
+        out.append({"title": title, "date": dt.date().isoformat() if dt else "", "link": "" if "news.google.com" in link else link, "url": link,
                     "desc": re.sub(r"\s+", " ", desc).strip()[:600]})
     return out
 
