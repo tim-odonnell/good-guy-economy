@@ -60,6 +60,16 @@ def job_ids():
         return {}
 
 
+def scripted(stage):
+    """True when the stage runs as a script (no_agent job, `econ-stages script`); False when the model writes it."""
+    try:
+        jobs = json.loads(JOBS_FILE.read_text())
+        jobs = jobs["jobs"] if isinstance(jobs, dict) else jobs
+    except Exception:
+        return False
+    return bool(next((j for j in jobs if j.get("name") == f"good-guy-economy-{stage}"), {}).get("no_agent"))
+
+
 def responses(job_name, day=TODAY):
     """[(output_path, reply_text)] for a job's runs on `day`, oldest first."""
     jid = job_ids().get(job_name)
@@ -143,13 +153,15 @@ def _replace_calls(reply, refine=False):
     calls = re.findall(r"^###\s*T-\d+.*?(?=^###\s|\Z)", reply, flags=re.M | re.S)
     summary = ""
     if refine:
-        m = re.search(r"(Where the economy is heading.*?)(?=^###\s*T-|\Z)", reply, flags=re.S | re.I)
+        m = re.search(r"(Where the economy is heading.*?)(?=^###\s*T-|\Z)", reply, flags=re.S | re.I | re.M)
         summary = m.group(1).strip() if m else ""
     if not calls and not summary:
         return
     calls = [sanitize_history_line(c) for c in calls]
     old_summary = re.search(r"<!-- SUMMARY START -->(.*?)<!-- SUMMARY END -->", text, re.S)
     summary_block = summary or (old_summary.group(1).strip() if old_summary else "")
+    # never keep T- entries inside the summary block (an older regex bug put the previous calls there)
+    summary_block = re.split(r"^###\s*T-", summary_block, maxsplit=1, flags=re.M)[0].strip()
     out = ["# Direction calls", "",
            "Kept current by scripts from the BRAINSTORM / REFINE replies (dated copies in theories/history/).", ""]
     if summary_block:

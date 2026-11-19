@@ -62,6 +62,10 @@ def alert_since():
     return since.strftime("%Y-%m-%d %H:%M")
 
 
+# Who wrote each analysis stage tonight: the local model, or econ-scripted.py (`econ-stages script|model`).
+SCRIPTED = {s: econ_lib.scripted(s) for s in ("brainstorm", "scenario", "morning")}
+WHO = {s: "written by script from the computed history" if v else "by the small local model" for s, v in SCRIPTED.items()}
+
 MISSING = []  # model stages (brainstorm, scenario, morning) that did not finish OK today -> partial report
 
 
@@ -247,18 +251,18 @@ def build():
     h.append("<p><b>What changed</b> <span class=tag>from official data</span></p><ul>" + "".join(f"<li>{e(x)}</li>" for x in changed) + "</ul>")
     md += ["**What changed** _(from official data)_", ""] + [f"- {x}" for x in changed] + [""]
     if meaning:
-        h.append(f"<p><b>What it means</b> <span class=tag>ANALYSIS by the small local model</span><br>{e(meaning)}</p>")
-        md += ["**What it means** _(ANALYSIS by the small local model)_", "", meaning, ""]
+        h.append(f"<p><b>What it means</b> <span class=tag>ANALYSIS {WHO['morning']}</span><br>{e(meaning)}</p>")
+        md += [f"**What it means** _(ANALYSIS {WHO['morning']})_", "", meaning, ""]
     elif checked:
         h.append("<p><b>What it means</b> <span class=muted>— every sentence of the model's note failed the fact check (see below).</span></p>")
         md += ["**What it means:** _every sentence of the model's note failed the fact check (see below)._", ""]
     else:
-        h.append("<p><b>What it means</b> <span class=muted>— the model's MORNING run didn't produce a note.</span></p>")
-        md += ["**What it means:** _no note from the model this morning._", ""]
+        h.append("<p><b>What it means</b> <span class=muted>— the MORNING stage didn't produce a note.</span></p>")
+        md += ["**What it means:** _no note this morning._", ""]
     if checked:
-        h.append("<p class=warn>Fact check removed " + str(len(checked)) + " sentence(s) from the model's note:</p><ul class=fc>"
+        h.append("<p class=warn>Fact check removed " + str(len(checked)) + " sentence(s) from the note:</p><ul class=fc>"
                  + "".join(f"<li>“{e(s_)}”<br><span class=muted>{e('; '.join(p_))}</span></li>" for s_, p_ in checked) + "</ul>")
-        md += [f"**Fact check removed {len(checked)} sentence(s) from the model's note:**", ""]
+        md += [f"**Fact check removed {len(checked)} sentence(s) from the note:**", ""]
         md += [f"- “{s_}” — _{'; '.join(p_)}_" for s_, p_ in checked] + [""]
     h.append("<p><b>Watch next</b> <span class=tag>official release calendars</span></p><ul>" + "".join(f"<li>{e(x)}</li>" for x in nxt) + "</ul>")
     md += ["**Watch next** _(official release calendars)_", ""] + [f"- {x}" for x in nxt] + [""]
@@ -269,15 +273,15 @@ def build():
         src_text = json.dumps(d) + "\n" + (econ_lib.history_text(hist) if hist else "") + "\n" + notes + "\n" + read(BASE / "subjects.md") + "\n" + "\n".join(changed)
         bad = number_check(meaning, src_text)
         if bad:
-            msg = "⚠ Number check: these figures in the model's sentences don't appear in tonight's data — treat them as unverified: " + ", ".join(bad)
+            msg = "⚠ Number check: these figures in the note don't appear in tonight's data — treat them as unverified: " + ", ".join(bad)
             H("p", e(msg), "warn"); md += [f"**{msg}**", ""]
         else:
-            H("p", "✓ Number check: every figure in the model's sentences matches tonight's data.", "muted"); md += ["_✓ Number check passed._", ""]
+            H("p", "✓ Number check: every figure in the note matches tonight's data.", "muted"); md += ["_✓ Number check passed._", ""]
 
     if heading:
-        H("h3", "Where it's heading (weekly scorecard)")
+        H("h3", f"Where it's heading ({'daily' if SCRIPTED['brainstorm'] else 'weekly'} scorecard)")
         h.append("<div class=take>" + "".join(f"<p>{e(l)}</p>" for l in heading.splitlines() if l.strip()) + "</div>")
-        md += ["### Where it's heading (weekly scorecard)", "", heading, ""]
+        md += [f"### Where it's heading ({'daily' if SCRIPTED['brainstorm'] else 'weekly'} scorecard)", "", heading, ""]
 
     # 3. numbers
     if d:
@@ -386,14 +390,15 @@ def build():
 
     # 5. history + calls
     if scen:
-        H("h2", "History comparisons <span class=tag>computed by econ-history, read by the model</span>"); md += ["## History comparisons", ""]
+        H("h2", "History comparisons <span class=tag>computed by econ-history" + ("" if SCRIPTED["scenario"] else ", read by the model") + "</span>"); md += ["## History comparisons", ""]
         for t, b in scen:
-            res = "\n".join(l.strip("- ").strip() for l in b.splitlines() if "recession within" in l)
+            res = "\n".join(l.strip("- ").strip() for l in b.splitlines() if "recession within" in l or "WHAT IT SUGGESTS" in l)
             res = res or field(b, "RESULT")
             h.append(f"<div class=card><b>{e(t)}</b><pre>{e(res)}</pre></div>")
             md += [f"**{t}**", "", res, ""]
     if calls:
-        H("h2", "Open direction calls <span class=tag>ANALYSIS</span>"); md += ["## Open direction calls (ANALYSIS)", ""]
+        tag = "ANALYSIS by rules: the direction of the latest readings" if SCRIPTED["brainstorm"] else "ANALYSIS"
+        H("h2", f"Open direction calls <span class=tag>{tag}</span>"); md += [f"## Open direction calls ({tag})", ""]
         h.append("<ul>" + "".join(f"<li>{e(t)} <span class=muted>— confidence {e(field(b, 'CONFIDENCE') or '?')}; wrong if: {e(field(b, 'WOULD BE WRONG IF') or '?')}</span></li>" for t, b in calls[:8]) + "</ul>")
         md += [f"- {t} — confidence {field(b, 'CONFIDENCE') or '?'}" for t, b in calls[:8]] + [""]
 

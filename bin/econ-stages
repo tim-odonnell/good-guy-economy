@@ -1,0 +1,46 @@
+#!/bin/bash
+# econ-stages - choose who writes the analysis stages of the economy report.
+#   script : brainstorm / scenario / refine / morning are done by econ-scripted.py (seconds, no model).
+#            COLLECT (news notes) and the fact check still use the local model.
+#   model  : the original setup - the local model writes all of them (about 23 min per run).
+#   status : show which one each stage uses.
+# Usage: econ-stages [script|model|status]
+set -u
+JOBS_FILE="$HOME/.hermes/cron/jobs.json"
+STAGES=(brainstorm scenario refine morning)
+MODE_FILE="$HOME/.config/good-guy-economy/stages"
+
+job_id() {
+    python3 -c "import json,sys;print(next((x['id'] for x in json.load(open(sys.argv[2]))['jobs'] if x['name']=='good-guy-economy-'+sys.argv[1]),''))" "$1" "$JOBS_FILE"
+}
+
+status() {
+    python3 - "$JOBS_FILE" <<'EOF'
+import json, sys
+for j in json.load(open(sys.argv[1]))["jobs"]:
+    if j["name"].startswith("good-guy-economy-"):
+        who = "script" if j.get("no_agent") else "model "
+        if j["name"].endswith("factcheck"):
+            who = "script that asks the model"
+        print(f"  {j['name'][17:]:<11} {who}  ({j.get('script')}, {j.get('state') or ('enabled' if j.get('enabled') else 'paused')})")
+EOF
+}
+
+case "${1:-status}" in
+    script|model)
+        for s in "${STAGES[@]}"; do
+            id=$(job_id "$s")
+            [ -n "$id" ] || { echo "no Hermes job named good-guy-economy-$s" >&2; exit 1; }
+            if [ "$1" = script ]; then
+                hermes cron edit "$id" --script "econ-script-$s.py" --no-agent >/dev/null || exit 1
+            else
+                hermes cron edit "$id" --script "econ-pre-$s.py" --agent >/dev/null || exit 1
+            fi
+        done
+        mkdir -p "$(dirname "$MODE_FILE")"; echo "$1" > "$MODE_FILE"
+        echo "Analysis stages now written by: $1"
+        status
+        ;;
+    status) echo "Analysis stages (${STAGES[*]}):"; status ;;
+    *) echo "usage: econ-stages [script|model|status]" >&2; exit 2 ;;
+esac

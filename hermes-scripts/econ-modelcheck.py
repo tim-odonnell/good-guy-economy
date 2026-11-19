@@ -217,7 +217,7 @@ def main():
     if notes_f.exists():
         (out / f"{TODAY}-notes.md").write_text(check_notes(notes_f.read_text(), d.get("pack", []), log))
     take_f = BASE / f"reports/drafts/{TODAY}-take.md"
-    if take_f.exists():
+    if take_f.exists() and not e.scripted("morning"):  # a script-written note only states computed facts
         meaning = F.morning_meaning(take_f.read_text())
         script_flags = {s for s, _ in F.check(meaning, d, hist)}  # those go anyway; don't spend model time on them
         check_meaning(F.remove(meaning, [(s, []) for s in script_flags]), d, hist, log)
