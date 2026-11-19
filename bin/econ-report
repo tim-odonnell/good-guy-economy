@@ -370,7 +370,7 @@ def build():
             H("p", "None.", "muted"); md += ["None.", ""]
         H("h2", "Headlines (AP, Reuters — last 24 hours)"); md += ["## Headlines (AP, Reuters — last 24 hours)", ""]
         if d["headlines"]:
-            h.append("<ul>" + "".join(f"<li><span class=src>{e(x['src'])}</span> {e(x['date']) + ' — ' if x.get('date') else ''}<a href='{e(headline_url(x))}'>{e(x['title'])}</a></li>" for x in d["headlines"]) + "</ul>")
+            h.append("<ul>" + "".join(f"<li><span class=src>{e(x['src'])}</span> {e(x['date']) + ' — ' if x.get('date') else ''}<a href='{e(headline_url(x))}' target=_blank rel=noopener>{e(x['title'])}</a></li>" for x in d["headlines"]) + "</ul>")
             md += [f"- [{x['src']}] {x['date'] + ' — ' if x.get('date') else ''}[{x['title']}]({headline_url(x)})" for x in d["headlines"]] + [""]
         else:
             H("p", "None found.", "muted"); md += ["None found.", ""]
