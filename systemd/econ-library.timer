@@ -1,12 +1,12 @@
 [Unit]
-Description=Good-Guy-Economy library: fetch new official documents daily at 00:20 (before the 01:05 COLLECT stage)
+Description=Good-Guy-Economy library: fetch new official documents daily at 01:05 (after the 01:00 wake-up, before the 01:10 COLLECT stage)
 
 [Timer]
-OnCalendar=*-*-* 00:20:00
+OnCalendar=*-*-* 01:05:00
 # Persistent on purpose (unlike the report timers): it only downloads documents, so catching up
 # at boot after a night off is wanted - the next real night then has them on hand.
 Persistent=true
-RandomizedDelaySec=5min
+# 01:05 = 5 min after the 01:00 window wakes the machine, so the network is back (00:20 ran at wake-up with no DNS, 2026-11-20)
 
 [Install]
 WantedBy=timers.target

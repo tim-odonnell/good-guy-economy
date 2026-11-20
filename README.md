@@ -30,16 +30,17 @@ history — and the model only writes short pieces of text in a fixed format, wh
 
 | Time  | Step | Who |
 |-------|------|-----|
-| 00:20 | Download newly released official documents into the local library | script (`econ-library`) |
-| 01:00 | Start the model server and the scheduler; keep the machine awake until 07:00 | systemd |
-| 01:05 | **Collect** — FRED watch-list, release feeds, headlines, a reading pack of official text → news notes | script + model |
-| 01:45 | **Brainstorm** — update the direction calls | model |
-| 02:25 | **Scenario** — compare today's conditions with history | model |
-| 03:00 | **Refine** (Mondays) — weekly scorecard of the calls | model |
-| 03:05 | **Morning** — the "What it means" note | model |
-| 03:40 | **Fact check** — every news-note bullet re-checked against its source text, one claim at a time | model (no tools) |
-| 04:30 | Build the report (06:40 backup); a script fact check drops sentences that misread the data | script (`econ-report`) |
-| 07:00 | Notification; model and scheduler stop | systemd |
+| 01:00 | Start the model server and the scheduler; keep the machine awake until 03:10 | systemd |
+| 01:05 | Download newly released official documents into the local library | script (`econ-library`) |
+| 01:10 | **Collect** — FRED watch-list, release feeds, headlines, a reading pack of official text → news notes | script + model |
+| 01:30 | **Brainstorm** — update the direction calls | script (`econ-stages model` switches back to the model) |
+| 01:32 | **Scenario** — compare today's conditions with history | script (`econ-stages model` switches back to the model) |
+| 01:34 | **Refine** (Mondays) — weekly scorecard of the calls | script (`econ-stages model` switches back to the model) |
+| 01:36 | **Morning** — the "What it means" note | script (`econ-stages model` switches back to the model) |
+| 01:40 | **Fact check** — every news-note bullet re-checked against its source text, one claim at a time | model (no tools) |
+| 02:05 | Build the report (06:40 backup); a script fact check drops sentences that misread the data | script (`econ-report`) |
+| 03:10 | Model and scheduler stop; the machine may sleep again | systemd |
+| 07:00 | Notification | systemd |
 
 Rules it follows:
 

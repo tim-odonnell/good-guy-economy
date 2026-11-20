@@ -85,8 +85,9 @@ def parse_notes(notes):
     for m in re.finditer(r"^###\s*(.+?)\n(.*?)(?=^###\s|^## |\Z)", notes, re.M | re.S):
         body = m.group(2)
         src = re.search(r"^SOURCE:.*?(https?://[^\s)]+)", body, re.M)
+        named = re.search(r"^SOURCE:\s*(.+)$", body, re.M)  # since 2026-11-19 E2B often names the source instead of linking it
         bullets = re.findall(r"^- \[(DATA|REPORTED|OPINION)\]\s*(.+)$", body, re.M)
-        blocks.append((m.group(1).strip(), src.group(1) if src else "", bullets))
+        blocks.append((m.group(1).strip(), src.group(1) if src else (named.group(1).strip() if named else ""), bullets))
     return blocks
 
 
@@ -128,9 +129,35 @@ def verdict(reply):
     return "UNCLEAR", first[:200]
 
 
-def check_notes(notes, pack, log):
+ABBREV = {"fomc": "federal open market committee", "bls": "bureau labor statistics", "bea": "bureau economic analysis",
+          "cpi": "consumer price index", "ppi": "producer price index", "gdp": "gross domestic product"}
+
+
+def source_url(named, items):
+    """URL for a source the notes give by name ("Fed — Minutes of the FOMC meeting, 2026-10-28"): the digest item
+    (reading pack, release feeds, headlines) whose agency matches and whose title shares most of the name's words."""
+    if named.startswith("http"):
+        return named
+    agency, _, name = named.partition(" — ") if " — " in named else ("", "", named)
+    name = re.sub(r"\(\d{4}-\d\d-\d\d\)\s*$", "", name)
+    expand = lambda t: " ".join(ABBREV.get(w.lower(), w) for w in re.findall(r"[\w']+", t))  # noqa: E731
+    want = words(expand(name))
+    best, score = "", 0.0
+    for it in items:
+        if agency and it.get("src") and it["src"].lower() != agency.strip().lower():
+            continue
+        if not want or not it.get("url"):
+            continue
+        sc = len(want & words(expand(it.get("title", "")))) / len(want)
+        if sc > score:
+            best, score = it["url"], sc
+    return best if score >= 0.6 else ""
+
+
+def check_notes(notes, pack, log, items=()):
     out_lines = notes.splitlines()
     for title, url, bullets in parse_notes(notes):
+        url = source_url(url, list(pack) + list(items)) if url else ""
         if not url or not bullets:
             continue
         text = fetch_source(url, pack)
@@ -216,7 +243,7 @@ def main():
     out = BASE / "reports/factcheck"
     out.mkdir(parents=True, exist_ok=True)
     if notes_f.exists():
-        (out / f"{TODAY}-notes.md").write_text(check_notes(notes_f.read_text(), d.get("pack", []), log))
+        (out / f"{TODAY}-notes.md").write_text(check_notes(notes_f.read_text(), d.get("pack", []), log, d.get("releases", []) + d.get("headlines", [])))
     take_f = BASE / f"reports/drafts/{TODAY}-take.md"
     if take_f.exists() and not e.scripted("morning"):  # a script-written note only states computed facts
         meaning = F.morning_meaning(take_f.read_text())

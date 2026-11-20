@@ -101,9 +101,10 @@ fi
 log_message "Starting Economy Report Run Now at $(date)"
 
 # Check if in nightly mode during run window
-if [ "$(date +%H)" -ge "01" ] && [ "$(date +%H)" -lt "07" ]; then
+NOW=$(date +%H%M)
+if [ "$NOW" -ge 100 ] && [ "$NOW" -lt 310 ]; then   # the nightly window, 01:00-03:10
     if [ -f "$MODE_FILE" ] && grep -q "nightly" "$MODE_FILE"; then
-        notify-send "Economy Mode Error" "Cannot run manually between 01:00 and 07:00. Mode is set to nightly."
+        notify-send "Economy Mode Error" "Cannot run manually between 01:00 and 03:10. Mode is set to nightly."
         exit 1
     fi
 fi

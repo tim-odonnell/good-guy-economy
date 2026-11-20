@@ -8,7 +8,7 @@
 Facts come from the econ-digest data (no model). The model's sections (morning
 note, direction calls, history comparisons) are included when they exist and are
 labelled as the model's analysis, after the script and model fact checks.
-Runs from systemd timers at 04:30, 06:40 (backup) and 07:00 (notify).
+Runs from systemd timers at 02:05, 06:40 (backup) and 07:00 (notify).
 
 No night, no report (2026-10-16): the report is only built when every night job (collect,
 brainstorm, scenario, morning) finished OK today. If COLLECT did not, it writes nothing and logs
