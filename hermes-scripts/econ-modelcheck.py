@@ -198,7 +198,8 @@ def check_meaning(meaning, d, hist, log):
 
 
 def main():
-    while not e.responses("good-guy-economy-morning") and time.time() - START < WAIT_FOR_MORNING:
+    # wait for the MODEL's morning reply only when the model writes it - a script-written note has no reply to wait for
+    while not e.scripted("morning") and not e.responses("good-guy-economy-morning") and time.time() - START < WAIT_FOR_MORNING:
         time.sleep(60)
     e.harvest()
     try:
