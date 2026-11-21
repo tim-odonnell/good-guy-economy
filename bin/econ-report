@@ -8,7 +8,7 @@
 Facts come from the econ-digest data (no model). The model's sections (morning
 note, direction calls, history comparisons) are included when they exist and are
 labelled as the model's analysis, after the script and model fact checks.
-Runs from systemd timers at 02:05, 06:40 (backup) and 07:00 (notify).
+Runs from systemd timers Tue-Sat at 02:05, 02:40 (backup) and 07:00 (notify).
 
 No night, no report (2026-10-16): the report is only built when every night job (collect,
 brainstorm, scenario, morning) finished OK today. If COLLECT did not, it writes nothing and logs
@@ -233,7 +233,11 @@ def build():
         H("p", e("⚠ " + pw), "warn"); md += [f"**⚠ {pw}**", ""]
     if econ_lib.gap_days() > 1:
         gl = econ_lib.gap_line()
-        H("p", e("⚠ " + gl), "warn"); md += [f"**⚠ {gl}**", ""]
+        if econ_lib.gap_planned():   # scheduled Sun/Mon break: a plain note, not a warning
+            gl = gl.split(" Look for")[0]
+            H("p", e(gl)); md += [f"_{gl}_", ""]
+        else:
+            H("p", e("⚠ " + gl), "warn"); md += [f"**⚠ {gl}**", ""]
 
     # 1. alerts
     if alerts:

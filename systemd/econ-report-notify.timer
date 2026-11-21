@@ -2,7 +2,7 @@
 Description=Announce the US-economy report at 07:00
 
 [Timer]
-OnCalendar=*-*-* 07:00:00
+OnCalendar=Tue..Sat *-*-* 07:00:00
 # Persistent removed 2026-10-16: a missed run must be skipped, not replayed at boot (no night = no report)
 
 [Install]

@@ -5,7 +5,7 @@
    "name": "good-guy-economy-collect",
    "schedule": {
     "kind": "cron",
-    "expr": "10 1 * * *"
+    "expr": "10 1 * * 2-6"
    },
    "script": "econ-digest.py",
    "no_agent": false,
@@ -20,7 +20,7 @@
    "name": "good-guy-economy-brainstorm",
    "schedule": {
     "kind": "cron",
-    "expr": "30 1 * * *"
+    "expr": "30 1 * * 2-6"
    },
    "script": "econ-pre-brainstorm.py",
    "no_agent": false,
@@ -35,7 +35,7 @@
    "name": "good-guy-economy-scenario",
    "schedule": {
     "kind": "cron",
-    "expr": "32 1 * * *"
+    "expr": "32 1 * * 2-6"
    },
    "script": "econ-pre-scenario.py",
    "no_agent": false,
@@ -50,7 +50,7 @@
    "name": "good-guy-economy-refine",
    "schedule": {
     "kind": "cron",
-    "expr": "34 1 * * 1"
+    "expr": "34 1 * * 2"
    },
    "script": "econ-pre-refine.py",
    "no_agent": false,
@@ -65,7 +65,7 @@
    "name": "good-guy-economy-morning",
    "schedule": {
     "kind": "cron",
-    "expr": "36 1 * * *"
+    "expr": "36 1 * * 2-6"
    },
    "script": "econ-pre-morning.py",
    "no_agent": false,
@@ -80,7 +80,7 @@
    "name": "good-guy-economy-factcheck",
    "schedule": {
     "kind": "cron",
-    "expr": "40 1 * * *"
+    "expr": "40 1 * * 2-6"
    },
    "script": "econ-modelcheck.py",
    "no_agent": true,

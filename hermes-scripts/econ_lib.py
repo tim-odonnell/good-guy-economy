@@ -748,6 +748,17 @@ def gap_days():
     return max(1, (TODAY - b).days) if b else 1
 
 
+RUN_WEEKDAYS = {1, 2, 3, 4, 5}   # reports Tue-Sat mornings (Mon-Fri data); none Sun/Mon mornings by schedule
+
+
+def gap_planned():
+    """True when every day skipped since the last report is a scheduled day off (e.g. Sat -> Tue)."""
+    b = baseline_date()
+    if not b or gap_days() <= 1:
+        return False
+    return all((b + timedelta(days=k)).weekday() not in RUN_WEEKDAYS for k in range(1, gap_days()))
+
+
 def gap_line():
     b = baseline_date()
     n = gap_days()
@@ -755,6 +766,9 @@ def gap_line():
         return ""
     if n <= 1:
         return f"Last report: {b} (normal nightly run)."
+    if gap_planned():
+        return (f"Last report: {b} (no reports Sunday or Monday morning by schedule) — this run covers the last {n} days "
+                f"({b + timedelta(days=1)} to {TODAY}). Look for what happened in ALL of those days, not just last night.")
     return (f"CATCH-UP: no report since {b} — this run covers the last {n} days "
             f"({b + timedelta(days=1)} to {TODAY}). Look for what happened in ALL of those days, not just last night.")
 
