@@ -2,7 +2,7 @@
 Description=Good-Guy-Economy library: fetch new official documents daily at 01:05 (after the 01:00 wake-up, before the 01:10 COLLECT stage)
 
 [Timer]
-OnCalendar=Tue..Sat *-*-* 01:05:00
+OnCalendar=*-*-* 01:05:00
 # Persistent on purpose (unlike the report timers): it only downloads documents, so catching up
 # at boot after a night off is wanted - the next real night then has them on hand.
 Persistent=true

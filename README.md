@@ -28,8 +28,7 @@ It runs entirely on your own machine — built and tested on a fanless Intel N10
 The model is small, so **scripts do everything that must be exact** — fetching, saving, numbers,
 history — and the model only writes short pieces of text in a fixed format, which scripts then check.
 
-Runs **Tuesday to Saturday mornings** (covering Monday to Friday). No reports on Sunday or Monday mornings: almost no
-official data comes out over the weekend; Tuesday's run covers Saturday to Monday.
+Runs **every morning**, weekends included (weekend reports mostly carry news: official data is rarely released on weekends).
 
 | Time  | Step | Who |
 |-------|------|-----|
@@ -38,7 +37,7 @@ official data comes out over the weekend; Tuesday's run covers Saturday to Monda
 | 01:10 | **Collect** — FRED watch-list, release feeds, headlines, a reading pack of official text → news notes | script + model |
 | 01:30 | **Brainstorm** — update the direction calls | script (`econ-stages model` switches back to the model) |
 | 01:32 | **Scenario** — compare today's conditions with history | script (`econ-stages model` switches back to the model) |
-| 01:34 | **Refine** (Tuesdays) — weekly scorecard of the calls | script (`econ-stages model` switches back to the model) |
+| 01:34 | **Refine** (Mondays) — weekly scorecard of the calls | script (`econ-stages model` switches back to the model) |
 | 01:36 | **Morning** — the "What it means" note | script (`econ-stages model` switches back to the model) |
 | 01:40 | **Fact check** — every news-note bullet re-checked against its source text, one claim at a time | model (no tools) |
 | 02:05 | Build the report (02:40 backup); a script fact check drops sentences that misread the data | script (`econ-report`) |
@@ -51,7 +50,6 @@ Rules it follows:
   booting does not produce a report from stale analysis.
 - **Catch-up.** The next real night knows how many days it missed and widens every look-back
   (headlines, releases, alerts, "new since") to cover the gap; the report says so at the top
-  (as a warning after a missed night, as a plain note after the scheduled Sunday/Monday break).
 - **Partial reports are labelled.** If data was collected but a model stage failed, the report says
   which, and leaves that stage's old analysis out instead of showing it as today's.
 - **Nothing old is presented as news.** The reading pack only holds documents released since the

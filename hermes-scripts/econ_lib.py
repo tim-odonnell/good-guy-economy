@@ -748,7 +748,7 @@ def gap_days():
     return max(1, (TODAY - b).days) if b else 1
 
 
-RUN_WEEKDAYS = {1, 2, 3, 4, 5}   # reports Tue-Sat mornings (Mon-Fri data); none Sun/Mon mornings by schedule
+RUN_WEEKDAYS = {0, 1, 2, 3, 4, 5, 6}   # reports every morning (was Tue-Sat on 2026-11-21); a gap is only "planned" if a day here is removed
 
 
 def gap_planned():

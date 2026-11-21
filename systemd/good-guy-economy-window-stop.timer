@@ -2,7 +2,7 @@
 Description=Stop Good-Guy-Economy's nightly active window at 03:10 (after the 03:00 web page publish)
 
 [Timer]
-OnCalendar=Tue..Sat *-*-* 03:10:00
+OnCalendar=*-*-* 03:10:00
 Persistent=true
 
 [Install]

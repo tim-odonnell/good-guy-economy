@@ -1,9 +1,9 @@
 [Unit]
-Description=Build the US-economy report at 02:05 (after the 01:40 fact check) and again at 02:40 as a backup (both before the 03:00 publish); Tue-Sat only
+Description=Build the US-economy report at 02:05 (after the 01:40 fact check) and again at 02:40 as a backup (both before the 03:00 publish)
 
 [Timer]
-OnCalendar=Tue..Sat *-*-* 02:05:00
-OnCalendar=Tue..Sat *-*-* 02:40:00
+OnCalendar=*-*-* 02:05:00
+OnCalendar=*-*-* 02:40:00
 # Persistent removed 2026-10-16: a missed run must be skipped, not replayed at boot (no night = no report)
 # wake from suspend so the report is built even if the machine was put to sleep during the window
 WakeSystem=true
