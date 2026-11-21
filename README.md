@@ -133,4 +133,8 @@ their RSS feeds.
 
 ## License
 
-MIT — see [`LICENSE`](LICENSE).
+**The Median Line License (draft)** — free to use until your income exceeds the
+median household income of the ZIP code you live in; above that line you
+contribute a small share of what the software helped you earn, never enough to
+pull you back below the line. Trust-based: no reporting, no audits. See
+[LICENSE](LICENSE) and [the license project](https://github.com/tim-odonnell/median-line-license).
