@@ -1,0 +1,50 @@
+#!/usr/bin/env python3
+"""econ-netwait [MAX_SECONDS] - wait until the internet really works, up to MAX_SECONDS (default 600).
+
+Travel/hotel Wi-Fi can say "connected" while names don't resolve or secure connections drop
+(2026-11-22: DNS failures and SSL EOFs at 01:05-01:20 left the report without headlines).
+"Works" = at least 3 of the sites the night run uses complete a secure connection and answer
+with any HTTP status (403 counts: the site was reached). Exit 0 when it works, 1 if it never did.
+Standard library only.
+"""
+import ssl
+import sys
+import time
+import urllib.error
+import urllib.request
+
+SITES = ["https://www.federalreserve.gov/", "https://www.bea.gov/", "https://news.google.com/rss",
+         "https://fred.stlouisfed.org/", "https://github.com/"]
+NEED = 3
+
+
+def reachable(url):
+    req = urllib.request.Request(url, method="HEAD", headers={"User-Agent": "econ-netwait (Good-Guy-Economy)"})
+    try:
+        urllib.request.urlopen(req, timeout=15, context=ssl.create_default_context()).close()
+        return True
+    except urllib.error.HTTPError:
+        return True          # the server answered: the network is fine
+    except Exception:
+        return False
+
+
+def main():
+    limit = int(sys.argv[1]) if len(sys.argv) > 1 else 600
+    start = time.monotonic()
+    tries = 0
+    while True:
+        tries += 1
+        ok = sum(reachable(u) for u in SITES)
+        waited = int(time.monotonic() - start)
+        if ok >= NEED:
+            print(f"econ-netwait: internet OK ({ok}/{len(SITES)} sites) after {waited}s")
+            return 0
+        if waited >= limit:
+            print(f"econ-netwait: internet still not working after {waited}s ({ok}/{len(SITES)} sites, {tries} tries)")
+            return 1
+        time.sleep(20)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

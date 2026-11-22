@@ -41,10 +41,15 @@ Runs **every morning**, weekends included (weekend reports mostly carry news: of
 | 01:36 | **Morning** — the "What it means" note | script (`econ-stages model` switches back to the model) |
 | 01:40 | **Fact check** — every news-note bullet re-checked against its source text, one claim at a time | model (no tools) |
 | 02:05 | Build the report (02:40 backup); a script fact check drops sentences that misread the data | script (`econ-report`) |
+| 02:16 | **Re-check** — if bad internet left the report thin (no headlines, calendars unreachable, no report), wait for the internet (up to 10 min) and run the whole pipeline once more; same for a failed VFINX/VBMFX/gold download | script (`econ-recheck`) |
+| 02:40 | Backup report build | script (`econ-report`) |
 | 03:10 | Model and scheduler stop; the machine may sleep again | systemd |
 | 07:00 | Notification | systemd |
 
 Rules it follows:
+
+- **Waits for a working internet.** The library download and COLLECT first run `econ-netwait` (travel Wi-Fi can be
+  "connected" but not working). If news still could not be fetched after the 02:16 re-check, the report says so at the top.
 
 - **No night, no report.** If the machine was off overnight, nothing is written in the morning —
   booting does not produce a report from stale analysis.

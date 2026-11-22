@@ -63,7 +63,7 @@ done
 if [ "$ENABLE" = 1 ]; then
     systemctl --user enable --now good-guy-economy-control.service
     systemctl --user enable --now good-guy-economy-window-start.timer good-guy-economy-window-stop.timer \
-        econ-report-build.timer econ-report-notify.timer econ-library.timer
+        econ-report-build.timer econ-report-notify.timer econ-library.timer econ-recheck.timer
     say "control page and nightly timers enabled"
 else
     echo

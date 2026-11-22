@@ -1,0 +1,9 @@
+[Unit]
+Description=Re-check tonight's reports at 02:16 (after economy 02:05 and VFINX/VBMFX/gold 02:10-02:14) and redo thin ones
+
+[Timer]
+OnCalendar=*-*-* 02:16:00
+# not Persistent: only useful inside the night window, never at boot
+
+[Install]
+WantedBy=timers.target

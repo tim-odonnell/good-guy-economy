@@ -19,7 +19,7 @@ case "${1:-}" in
     manual)
         # manual: disable all timers, pause all jobs, set mode file, notify user
         echo "Setting mode to manual..."
-        systemctl --user disable --now good-guy-economy-window-start.timer good-guy-economy-window-stop.timer econ-report-build.timer econ-report-notify.timer econ-library.timer
+        systemctl --user disable --now good-guy-economy-window-start.timer good-guy-economy-window-stop.timer econ-report-build.timer econ-report-notify.timer econ-library.timer econ-recheck.timer
         JOBS=($(all_job_ids))
         for id in "${JOBS[@]}"; do hermes cron pause "$id"; done
         echo manual > "$MODE_FILE"
@@ -28,7 +28,7 @@ case "${1:-}" in
     nightly)
         # nightly: enable all timers, resume all jobs, set mode file, notify user
         echo "Setting mode to nightly..."
-        systemctl --user enable --now good-guy-economy-window-start.timer good-guy-economy-window-stop.timer econ-report-build.timer econ-report-notify.timer econ-library.timer
+        systemctl --user enable --now good-guy-economy-window-start.timer good-guy-economy-window-stop.timer econ-report-build.timer econ-report-notify.timer econ-library.timer econ-recheck.timer
         JOBS=($(all_job_ids))
         for id in "${JOBS[@]}"; do hermes cron resume "$id"; done
         echo nightly > "$MODE_FILE"

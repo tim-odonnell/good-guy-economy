@@ -66,6 +66,11 @@ CLEANED=0
 cleanup() {
     [ "$CLEANED" = 1 ] && return
     CLEANED=1
+    if [ "${ECON_RUN_NOW_NIGHT:-}" = 1 ]; then
+        log_message "Night re-run finished: stack and keep-awake stay up for the 03:00 publish (the 03:10 window stop ends them)."
+        log_message "Cleanup done."
+        return
+    fi
     log_message "Trap triggered. Stopping stack and window-awake service."
     # Stop the stack
     curl -sS -m 120 -X POST "http://127.0.0.1:8420/api/stack/stop?force=true" >> "$LOG_FILE" 2>&1
@@ -88,7 +93,7 @@ if [ "${ECON_RUN_NOW_INNER:-}" != 1 ]; then
         notify-send "Economy report" "A run is already in progress (see ~/Economy-Reports/run-now.log)."
         exit 1
     fi
-    exec systemd-run --user --unit=econ-run-now --collect --setenv=ECON_RUN_NOW_INNER=1 --setenv=DISPLAY="${DISPLAY:-:0}" --setenv=DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-}" --setenv=PATH="$PATH" "$0" "$@"
+    exec systemd-run --user --unit=econ-run-now --collect --setenv=ECON_RUN_NOW_INNER=1 --setenv=ECON_RUN_NOW_NIGHT="${ECON_RUN_NOW_NIGHT:-}" --setenv=DISPLAY="${DISPLAY:-:0}" --setenv=DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-}" --setenv=PATH="$PATH" "$0" "$@"
 fi
 
 # --- Lock with flock ---
@@ -102,7 +107,7 @@ log_message "Starting Economy Report Run Now at $(date)"
 
 # Check if in nightly mode during run window
 NOW=$(date +%H%M)
-if [ "$NOW" -ge 100 ] && [ "$NOW" -lt 310 ]; then   # the nightly window, 01:00-03:10
+if [ "${ECON_RUN_NOW_NIGHT:-}" != 1 ] && [ "$NOW" -ge 100 ] && [ "$NOW" -lt 310 ]; then   # the nightly window, 01:00-03:10 (econ-recheck sets ECON_RUN_NOW_NIGHT=1)
     if [ -f "$MODE_FILE" ] && grep -q "nightly" "$MODE_FILE"; then
         notify-send "Economy Mode Error" "Cannot run manually between 01:00 and 03:10. Mode is set to nightly."
         exit 1
@@ -113,7 +118,7 @@ trap cleanup EXIT
 trap 'exit 1' INT TERM
 
 # 1. Notify user
-notify-send "Economy Report" "Economy report: starting."
+[ "${ECON_RUN_NOW_NIGHT:-}" = 1 ] || notify-send "Economy Report" "Economy report: starting."
 
 # 2. Start window-awake service
 systemctl --user start good-guy-economy-window-awake.service
@@ -175,6 +180,7 @@ log_message "econ-report exited with code $EXIT_CODE_ECON_REPORT"
 
 cleanup          # free the RAM now; the notification below can wait hours for a click
 flock -u $LOCK_FD
+if [ "${ECON_RUN_NOW_NIGHT:-}" = 1 ]; then log_message "Night re-run: no pop-up (the 07:00 one covers it). Run finished."; exit 0; fi
 log_message "Running econ-report --notify..."
 # The pop-up waits (up to 4 h) for a click: run it as its own unit so this run ends now
 # and the Run Now icon is free again straight away.

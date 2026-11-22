@@ -1,0 +1,8 @@
+[Unit]
+Description=Good-Guy-Economy: if bad internet left tonight's reports thin, wait for it and redo them once (before the 03:00 publish)
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/econ-recheck
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+TimeoutStartSec=50min

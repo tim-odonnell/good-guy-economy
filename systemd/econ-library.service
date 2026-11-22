@@ -4,6 +4,7 @@ After=network-online.target
 
 [Service]
 Type=oneshot
+ExecStartPre=-%h/.local/bin/econ-netwait 300
 ExecStart=%h/.local/bin/econ-library fetch
 # light background job: low CPU/IO priority and hard caps so it can never starve the desktop
 Nice=15

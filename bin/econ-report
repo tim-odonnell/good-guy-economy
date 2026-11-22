@@ -239,6 +239,14 @@ def build():
         else:
             H("p", e("⚠ " + gl), "warn"); md += [f"**⚠ {gl}**", ""]
 
+    if d is not None:   # bad (e.g. travel) Wi-Fi overnight: say so plainly instead of showing a quietly thin report
+        trouble = (["headlines"] if not d.get("headlines") else []) + \
+                  (["release calendars"] if any("unreachable" in str(c) for c in d.get("calendar_issues") or []) else [])
+        if trouble:
+            nw = ("Internet trouble overnight: " + " and ".join(trouble) + " could not be fetched, even after a second try, "
+                  "so news may be missing from this report. The data tables use the latest figures that were saved.")
+            H("p", e("⚠ " + nw), "warn"); md += [f"**⚠ {nw}**", ""]
+
     # 1. alerts
     if alerts:
         ah = "Alerts (last 24 hours)" if econ_lib.gap_days() <= 1 else f"Alerts (since the last report, {econ_lib.baseline_date()})"
@@ -377,7 +385,7 @@ def build():
             h.append("<ul>" + "".join(f"<li><span class=src>{e(x['src'])}</span> {e(x['date']) + ' — ' if x.get('date') else ''}<a href='{e(headline_url(x))}'>{e(x['title'])}</a></li>" for x in d["headlines"]) + "</ul>")
             md += [f"- [{x['src']}] {x['date'] + ' — ' if x.get('date') else ''}[{x['title']}]({headline_url(x)})" for x in d["headlines"]] + [""]
         else:
-            H("p", "None found.", "muted"); md += ["None found.", ""]
+            H("p", "None could be fetched (internet trouble overnight).", "muted"); md += ["None could be fetched (internet trouble overnight).", ""]
 
     if notes.strip():
         body = re.sub(r"^(SOURCE: COLLECT run replies|ACCESSED:).*\n", "", notes, flags=re.M)  # file header only

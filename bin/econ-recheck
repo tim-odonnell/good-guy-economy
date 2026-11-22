@@ -1,0 +1,106 @@
+#!/usr/bin/env python3
+"""econ-recheck - 02:16 nightly: if bad internet left tonight's reports thin, wait for it and redo them once.
+
+Runs after the 02:05 economy report and the 02:10-02:14 VFINX/VBMFX/gold reports, before the 02:40 backup
+build and the 03:00 publish. Two checks:
+  * Economy: today's report missing, "No data could be collected", no headlines, or a release calendar
+    "unreachable tonight"  ->  econ-netwait (up to 10 min), then the whole pipeline again via
+    `econ-run-now` with ECON_RUN_NOW_NIGHT=1 (allowed in the window, no pop-up, leaves the stack and the
+    keep-awake to the 03:10 window stop). Waits for it to finish (max 30 min).
+  * VFINX/VBMFX/gold (Tue-Sat only, when they ran): last run failed, or the report fell back to the
+    saved price history  ->  run that report's service again.
+If the economy report is still thin afterwards, the report itself says so (econ-report's internet banner).
+Log: ~/Economy-Reports/recheck.log. Standard library only.
+"""
+import datetime
+import os
+import subprocess
+import time
+from pathlib import Path
+
+HOME = Path.home()
+TODAY = datetime.date.today()
+LOG = HOME / "Economy-Reports" / "recheck.log"
+TRENDS = [("vfinx", HOME / "VFINX-Reports"), ("vbmfx", HOME / "VBMFX-Reports"), ("gold", HOME / "Gold-Reports")]
+
+
+def log(msg):
+    line = f"{datetime.datetime.now():%Y-%m-%d %H:%M:%S} {msg}"
+    print(line)
+    with open(LOG, "a") as f:
+        f.write(line + "\n")
+
+
+def sh(*cmd, **kw):
+    return subprocess.run(list(cmd), capture_output=True, text=True, **kw)
+
+
+def economy_problems():
+    md = HOME / "Economy-Reports" / f"{TODAY}.md"
+    if not md.exists():
+        return ["no report built tonight"]
+    t = md.read_text(errors="replace")
+    p = []
+    if "No data could be collected" in t:
+        p.append("no data collected")
+    head = t.split("## Headlines", 1)[1].split("\n## ", 1)[0] if "## Headlines" in t else ""
+    if "## Headlines" in t and "- [" not in head:
+        p.append("no headlines")
+    if "unreachable tonight" in t:
+        p.append("release calendar unreachable")
+    return p
+
+
+def trend_problems(name, folder):
+    if TODAY.isoweekday() not in (2, 3, 4, 5, 6):        # Tue-Sat: the nights these reports run
+        return []
+    res = sh("systemctl", "--user", "show", f"{name}-report.service", "-p", "Result", "--value").stdout.strip()
+    latest = folder / "latest.md"
+    if not latest.exists():
+        latest = max(folder.glob("20*.md"), default=None, key=lambda f: f.stat().st_mtime)
+    p = []
+    if res and res != "success":
+        p.append(f"last run {res}")
+    if latest and "saved price history" in latest.read_text(errors="replace") and \
+            datetime.date.fromtimestamp(latest.stat().st_mtime) == TODAY:
+        p.append("used the saved price history (download failed)")
+    return p
+
+
+def netwait(seconds):
+    r = sh("econ-netwait", str(seconds))
+    log((r.stdout or r.stderr).strip())
+    return r.returncode == 0
+
+
+def main():
+    if (HOME / ".config/good-guy-economy/run-mode").read_text().strip() != "nightly":
+        log("manual mode - nothing to do")
+        return
+    econ = economy_problems()
+    trends = {n: trend_problems(n, f) for n, f in TRENDS}
+    trends = {n: p for n, p in trends.items() if p}
+    if not econ and not trends:
+        log("all reports look complete - nothing to redo")
+        return
+    log("thin tonight: " + "; ".join([f"economy: {', '.join(econ)}"] * bool(econ) +
+                                     [f"{n}: {', '.join(p)}" for n, p in trends.items()]))
+    netwait(600)
+    for n in trends:
+        r = sh("systemctl", "--user", "start", f"{n}-report.service")
+        log(f"{n} report re-run: {'ok' if r.returncode == 0 else 'FAILED ' + r.stderr.strip()[-200:]}")
+    if econ:
+        env = dict(os.environ, ECON_RUN_NOW_NIGHT="1")
+        r = sh("econ-run-now", env=env)
+        log("economy pipeline re-run started" if r.returncode == 0 else f"economy re-run could not start: {r.stderr.strip()[-200:]}")
+        time.sleep(10)
+        for _ in range(180):                            # up to 30 min
+            if sh("systemctl", "--user", "is-active", "-q", "econ-run-now.service").returncode != 0:
+                break
+            time.sleep(10)
+        left = economy_problems()
+        log("economy re-run done: " + ("complete now" if not left else "still thin (" + ", ".join(left) + ") - the report says so"))
+
+
+if __name__ == "__main__":
+    main()

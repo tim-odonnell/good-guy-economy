@@ -223,7 +223,19 @@ def write_dashboard(slug, label, block):
     path.write_text(text)
 
 
+def wait_for_network():
+    """Travel Wi-Fi can be 'connected' but not working at 01:10: wait up to 10 min (econ-netwait) before fetching."""
+    import shutil, subprocess
+    tool = shutil.which("econ-netwait") or str(Path.home() / ".local/bin/econ-netwait")
+    try:
+        r = subprocess.run([tool, "600"], capture_output=True, text=True, timeout=700)
+        print((r.stdout or r.stderr).strip(), file=sys.stderr)
+    except Exception as ex:
+        print(f"econ-netwait not run ({type(ex).__name__}); fetching anyway", file=sys.stderr)
+
+
 def main():
+    wait_for_network()
     for d in ("corpus/raw", "corpus/entities", "data/digest"):
         (BASE / d).mkdir(parents=True, exist_ok=True)
     try:
